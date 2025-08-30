@@ -47,6 +47,7 @@ jobs:
           server:     ${{ secrets.FTP_SERVER }}
           username:   ${{ secrets.FTP_USERNAME }}
           password:   ${{ secrets.FTP_PASSWORD }}
-          protocol:   ftps          # change to "ftp" if your host doesn't support FTPS
+          protocol: ftp
+          port: 21
           local-dir:  out/
           server-dir: ${{ secrets.FTP_TARGET_DIR }}   # e.g. public_html/favourite-albums/
