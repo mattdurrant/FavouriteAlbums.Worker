@@ -1,0 +1,11 @@
+{
+  "profiles": {
+    "SpotifyAuthTool": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "SPOTIFY_CLIENT_ID": "096503e03c684c859936847779ef6aa9",
+        "SPOTIFY_CLIENT_SECRET": "97ee5a42e137486fb9e4c61c8f3a323c"
+      }
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "profiles": {
+    "FavouriteAlbums.Worker": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "SPOTIFY_CLIENT_ID": "096503e03c684c859936847779ef6aa9",
+        "SPOTIFY_CLIENT_SECRET": "97ee5a42e137486fb9e4c61c8f3a323c",
+        "SPOTIFY_REFRESH_TOKEN": "AQAUIFsNmOUTCi6PuArTK__i_LHF907hduVJbD_7Q-L9t5dQ2BuAMwMwoClGKeXb7Rq27p3aEHnCR7Fy6ks2p_zT_ieivX-94Gaw4EHq7QPSkg447KPLdV4q-AIyypBigvk",
+        "OUTPUT_DIR": "out",
+        "STAR_PLAYLISTS": "5:3Rs7e9KMwxCJroMpvMDpL8,4:3DGYY0Hj4RzydffF170y3Z,3:5noq8iSiMjSLH2e9t11NOv,2:1ABB6n1AFfTUEJTfCaopAY,1:532lvkCpc2oYKvmD4UmN0f",
+        "FILLER_PLAYLIST_ID": "4GDdPGifkYK7WWk7HmL67v",
+        "EXCLUDED_PLAYLIST_ID": "2X8xwVpmCg0erBpNK9VgP3"
+      }
+    }
+  }
+}
