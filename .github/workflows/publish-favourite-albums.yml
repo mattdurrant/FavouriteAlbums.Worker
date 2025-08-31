@@ -2,7 +2,7 @@ name: Build and Publish Favourite Albums (Pages)
 
 on:
   schedule:
-    # Daily at 06:05 UTC (≈ 07:05 during BST / 06:05 winter UK time)
+    # Daily at 06:05 UTC (≈ 07:05 during BST / 06:05 winter)
     - cron: "5 6 * * *"
   workflow_dispatch: {}
 
