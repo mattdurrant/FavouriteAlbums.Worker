@@ -1,22 +1,23 @@
-name: Build and Publish Favourite Albums (Pages)
+name: Build and Publish Favourite Albums (FTP)
 
 on:
   schedule:
-    # Daily at 06:05 UTC (≈ 07:05 during BST / 06:05 winter)
-    - cron: "5 6 * * *"
+    - cron: "5 6 * * *"   # daily 06:05 UTC; change/disable if you want
   workflow_dispatch: {}
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
 jobs:
-  build:
+  build-run-deploy:
     runs-on: ubuntu-latest
+    concurrency:
+      group: fav-albums-ftp
+      cancel-in-progress: false
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "9.0.x"
 
@@ -35,20 +36,17 @@ jobs:
         run: dotnet run --project FavouriteAlbums.Worker/FavouriteAlbums.Worker.csproj -c Release
 
       - name: Verify artifact exists
-        run: test -f out/index.html
+        run: |
+          ls -la out
+          test -f out/index.html
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+      - name: Upload via FTP
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.6
         with:
-          path: out
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deploy
-        uses: actions/deploy-pages@v4
+          server:     ${{ secrets.FTP_SERVER }}
+          username:   ${{ secrets.FTP_USERNAME }}
+          password:   ${{ secrets.FTP_PASSWORD }}
+          protocol:   ftp
+          port:       21
+          local-dir:  out/
+          server-dir: ${{ secrets.FTP_TARGET_DIR }}   # must end with /
