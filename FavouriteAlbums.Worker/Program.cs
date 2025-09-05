@@ -22,6 +22,9 @@ internal class Program
 
             Directory.CreateDirectory(cfg.OutputDir);
 
+            var starWeights = ParseStarWeights(Environment.GetEnvironmentVariable("STAR_WEIGHTS"));
+
+
             using var http = new HttpClient();
             var token = await SpotifyApi.GetAccessTokenAsync(http, cfg.SpotifyClientId, cfg.SpotifyClientSecret, cfg.SpotifyRefreshToken);
 
@@ -41,15 +44,19 @@ internal class Program
             if (!string.IsNullOrWhiteSpace(cfg.ExcludedPlaylistId))
                 await AddPlaylistTracksTo(excludedTrackIds, cfg.ExcludedPlaylistId!);
 
-            // Aggregate albums
+            // ---- Aggregate with weights; global de-dup ----
             var albums = new Dictionary<string, AlbumAggregate>(StringComparer.Ordinal);
             var seenTrackIds = new HashSet<string>(StringComparer.Ordinal);
 
             foreach (var (stars, playlistId) in cfg.StarPlaylists.OrderByDescending(kv => kv.Key))
             {
-                Console.WriteLine($"Reading {stars}★ playlist {playlistId}...");
+                var weight = starWeights.TryGetValue(stars, out var w) ? w : 0.0;
+                Console.WriteLine($"Reading {stars}★ playlist {playlistId} (weight {weight})...");
                 await foreach (var track in SpotifyApi.GetAllPlaylistTracksAsync(http, token, playlistId))
                 {
+                    var albumType = track.Album?.AlbumType?.ToLowerInvariant();
+                    if (albumType is "single" or "compilation") continue;
+
                     if (track?.Album?.Id is null || string.IsNullOrWhiteSpace(track.Uri)) continue;
                     if (!track.Uri.StartsWith("spotify:track:")) continue;
                     if (excludedTrackIds.Contains(track.Uri)) continue;
@@ -67,26 +74,53 @@ internal class Program
                             Uri = track.Album.Uri ?? "",
                             Count = 0,
                             Score = 0,
-                            StarCounts = new() { { 1, 0 }, { 2, 0 }, { 3, 0 }, { 4, 0 }, { 5, 0 } }
+                            StarCounts = new() { { 1, 0 }, { 2, 0 }, { 3, 0 }, { 4, 0 }, { 5, 0 } },
+                            WeightedSum = 0.0,
+                            Denominator = 0
                         };
                         albums[id] = agg;
                     }
 
                     agg.Count += 1;
-                    agg.Score += stars;
+                    agg.Score += stars; // legacy
                     agg.StarCounts[stars] = agg.StarCounts.GetValueOrDefault(stars) + 1;
+                    agg.WeightedSum += weight;
                 }
             }
 
+            // ---- Compute denominators using full album tracklists minus excludes ----
+            foreach (var agg in albums.Values)
+            {
+                var albumTracks = await SpotifyApi.GetAllAlbumTrackUrisAsync(http, token, agg.AlbumId);
+                if (albumTracks.Count == 0)
+                {
+                    // fallback: if Spotify didn’t return tracks (rare), approximate denom by rated tracks counted
+                    agg.Denominator = agg.Count;
+                    continue;
+                }
+
+                // Remove any tracks that are in filler/excluded playlists from the denominator
+                albumTracks.ExceptWith(excludedTrackIds);
+
+                agg.Denominator = albumTracks.Count;
+            }
+
+            // ---- Rank by percentage, then by 5★ count, then by total rated tracks ----
             var ranked = albums.Values
-                .OrderByDescending(a => a.Score)
+                .Where(a => a.Denominator > 0) // avoid divide-by-zero
+                .OrderByDescending(a => a.Percent)
                 .ThenByDescending(a => a.StarCounts.GetValueOrDefault(5))
                 .ThenByDescending(a => a.Count)
                 .ThenBy(a => a.AlbumName)
                 .ToList();
 
-            var title = "Matt’s Favourite Albums (Weighted by ★)";
+            var topN = EnvInt("TOP_N", 100);   // defaults to 100 if not set
+            var total = ranked.Count;          // (optional) if you want to display "Top 100 of X"
+            ranked = ranked.Take(topN).ToList();
+
+            var title = $"Matt’s Favourite Albums — Top {ranked.Count} (by %)";
             var html = HtmlRenderer.Render(ranked, title);
+            
             var outPath = Path.Combine(cfg.OutputDir, "index.html");
             await File.WriteAllTextAsync(outPath, html, Encoding.UTF8);
 
@@ -123,5 +157,29 @@ internal class Program
         if (!Enumerable.Range(1, 5).All(dict.ContainsKey))
             throw new InvalidOperationException("STAR_PLAYLISTS must include all 1..5 entries.");
         return dict;
+    }
+
+    private static Dictionary<int, double> ParseStarWeights(string? csv)
+    {
+        // default (balanced)
+        var weights = new Dictionary<int, double> { { 5, 1.0 }, { 4, 0.8 }, { 3, 0.5 }, { 2, 0.25 }, { 1, 0.10 } };
+        if (string.IsNullOrWhiteSpace(csv)) return weights;
+
+        foreach (var part in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var kv = part.Split(':', 2, StringSplitOptions.TrimEntries);
+            if (kv.Length != 2) continue;
+            if (!int.TryParse(kv[0], out var stars)) continue;
+            if (!double.TryParse(kv[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var w)) continue;
+            if (stars is < 1 or > 5) continue;
+            weights[stars] = w;
+        }
+        return weights;
+    }
+
+    private static int EnvInt(string name, int @default)
+    {
+        var v = Environment.GetEnvironmentVariable(name);
+        return int.TryParse(v, out var n) && n > 0 ? n : @default;
     }
 }

@@ -47,7 +47,8 @@ public static class SpotifyApi
 
     public static async IAsyncEnumerable<SimplifiedTrack> GetAllPlaylistTracksAsync(HttpClient http, string accessToken, string playlistId)
     {
-        string? next = $"https://api.spotify.com/v1/playlists/{playlistId}/tracks?limit=100&fields=items(track(album(id,name,images,artists(name),uri),name,uri)),next";
+        string? next = $"https://api.spotify.com/v1/playlists/{playlistId}/tracks" +
+               $"?limit=100&fields=items(track(album(id,name,images,artists(name),uri,album_type),name,uri)),next";
 
         while (next is not null)
         {
@@ -68,6 +69,46 @@ public static class SpotifyApi
 
             next = page?.Next;
         }
+    }
+
+    public static async Task<HashSet<string>> GetAllAlbumTrackUrisAsync(HttpClient http, string accessToken, string albumId)
+    {
+        // Return URIs like "spotify:track:xyz" for all tracks on the album
+        var result = new HashSet<string>(StringComparer.Ordinal);
+        string? next = $"https://api.spotify.com/v1/albums/{albumId}/tracks?limit=50&fields=items(id,uri),next";
+
+        while (next is not null)
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, next);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+            using var res = await http.SendAsync(req);
+            res.EnsureSuccessStatusCode();
+
+            using var stream = await res.Content.ReadAsStreamAsync();
+            using var doc = JsonDocument.Parse(stream);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty("items", out var items) && items.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in items.EnumerateArray())
+                {
+                    if (item.TryGetProperty("uri", out var uriEl))
+                    {
+                        var uri = uriEl.GetString();
+                        if (!string.IsNullOrWhiteSpace(uri)) result.Add(uri!);
+                    }
+                    else if (item.TryGetProperty("id", out var idEl))
+                    {
+                        var id = idEl.GetString();
+                        if (!string.IsNullOrWhiteSpace(id)) result.Add($"spotify:track:{id}");
+                    }
+                }
+            }
+
+            next = root.TryGetProperty("next", out var nextEl) ? nextEl.GetString() : null;
+        }
+
+        return result;
     }
 
     public sealed class TokenResponse

@@ -33,9 +33,11 @@ a{color:inherit;text-decoration:none}
                   .Append(a.ImageUrl).Append("\" alt=\"").Append(Html(title)).Append("\"></a>");
             sb.Append("<div class=\"album\">").Append(Html(a.AlbumName)).Append("</div>");
             sb.Append("<div class=\"meta\">").Append(Html(string.Join(", ", a.Artists))).Append("</div>");
-            sb.Append("<div class=\"count\">Unique tracks counted: ").Append(a.Count).Append("</div>");
+            sb.Append("<div class=\"count\">Unique rated tracks counted: ").Append(a.Count).Append("</div>");
             sb.Append("<div class=\"pills\">");
             sb.Append("<span class=\"pill\"><strong>Score</strong> ").Append(a.Score).Append("</span>");
+            sb.Append("<span class=\"pill\"><strong>%</strong> ").Append(a.Percent.ToString("0.0")).Append("</span>");
+            sb.Append("<span class=\"pill\"><strong>Denom</strong> ").Append(a.Denominator).Append("</span>");
             for (int s = 5; s >= 1; s--)
             {
                 var c = a.StarCounts.GetValueOrDefault(s);
