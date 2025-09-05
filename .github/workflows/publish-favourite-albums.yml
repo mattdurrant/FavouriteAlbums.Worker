@@ -1,23 +1,21 @@
-name: Build and Publish Favourite Albums (FTP)
+name: Build and Publish Favourite Albums (Pages)
 
 on:
   schedule:
-    - cron: "5 6 * * *"   # daily 06:05 UTC; change/disable if you want
+    - cron: "5 6 * * *"   # daily 06:05 UTC
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
 jobs:
-  build-run-deploy:
+  build:
     runs-on: ubuntu-latest
-    concurrency:
-      group: fav-albums-ftp
-      cancel-in-progress: false
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "9.0.x"
 
@@ -36,17 +34,24 @@ jobs:
         run: dotnet run --project FavouriteAlbums.Worker/FavouriteAlbums.Worker.csproj -c Release
 
       - name: Verify artifact exists
-        run: |
-          ls -la out
-          test -f out/index.html
+        run: test -f out/index.html
 
-      - name: Upload via FTP
-        uses: SamKirkland/FTP-Deploy-Action@v4.3.6
+      # Make Pages remember the custom domain
+      - name: Add CNAME file
+        run: echo "albums.mattdurrant.com" > out/CNAME
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          server:     ${{ secrets.FTP_SERVER }}
-          username:   ${{ secrets.FTP_USERNAME }}
-          password:   ${{ secrets.FTP_PASSWORD }}
-          protocol:   ftp
-          port:       21
-          local-dir:  out/
-          server-dir: ${{ secrets.FTP_TARGET_DIR }}   # must end with /
+          path: out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
