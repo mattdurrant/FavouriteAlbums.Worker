@@ -1,4 +1,6 @@
-﻿namespace FavouriteAlbums.Core;
+﻿using System.Text.Json.Serialization;
+
+namespace FavouriteAlbums.Core;
 
 public sealed class AlbumAggregate
 {
@@ -8,13 +10,14 @@ public sealed class AlbumAggregate
     public required string ImageUrl { get; init; }
     public required string Uri { get; init; }
 
-    public int Count { get; set; }                 // unique rated tracks counted (after excludes)
-    public int Score { get; set; }                 // legacy integer score (kept for display if you want)
+    public int Count { get; set; }
+    public int Score { get; set; }
     public Dictionary<int, int> StarCounts { get; set; } = new();
 
-    // NEW for percentage scoring
-    public double WeightedSum { get; set; }        // sum of track weights (e.g., 1 + 0.8 + ...)
-    public int Denominator { get; set; }           // album tracks minus filler/excluded tracks
+    // % scoring fields
+    public double WeightedSum { get; set; }    // sum of per-track weights
+    public int Denominator { get; set; }    // total_tracks - excluded_on_album
+    public int TotalTracks { get; set; }    // captured from SimplifiedAlbum.TotalTracks
     public double Percent => Denominator > 0 ? (WeightedSum / Denominator) * 100.0 : 0.0;
 }
 
@@ -44,7 +47,8 @@ public sealed class SimplifiedAlbum
     public List<SimplifiedArtist>? Artists { get; set; }
     public List<SimplifiedImage>? Images { get; set; }
     public string? Uri { get; set; }
-    public string? AlbumType { get; set; }
+    [JsonPropertyName("album_type")] public string? AlbumType { get; set; }   // "album" | "single" | "compilation"
+    [JsonPropertyName("total_tracks")] public int TotalTracks { get; set; } // full track count for this album
 }
 
 public sealed class SimplifiedArtist { public string? Name { get; set; } }

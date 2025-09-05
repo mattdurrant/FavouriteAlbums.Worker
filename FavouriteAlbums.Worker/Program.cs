@@ -1,4 +1,5 @@
-﻿using System.Text;
+﻿using System.Globalization;
+using System.Text;
 using FavouriteAlbums.Core;
 
 namespace FavouriteAlbums.Worker;
@@ -9,6 +10,7 @@ internal class Program
     {
         try
         {
+            // --- read env vars ---
             var cfg = new AppConfig
             {
                 SpotifyClientId = Env("SPOTIFY_CLIENT_ID"),
@@ -19,48 +21,62 @@ internal class Program
                 FillerPlaylistId = Env("FILLER_PLAYLIST_ID"),
                 ExcludedPlaylistId = Environment.GetEnvironmentVariable("EXCLUDED_PLAYLIST_ID")
             };
+            var starWeights = ParseStarWeights(Environment.GetEnvironmentVariable("STAR_WEIGHTS")); // optional override
 
             Directory.CreateDirectory(cfg.OutputDir);
-
-            var starWeights = ParseStarWeights(Environment.GetEnvironmentVariable("STAR_WEIGHTS"));
-
 
             using var http = new HttpClient();
             var token = await SpotifyApi.GetAccessTokenAsync(http, cfg.SpotifyClientId, cfg.SpotifyClientSecret, cfg.SpotifyRefreshToken);
 
-            // Build exclusion set
+            // --- build exclusion sets: track URIs + per-album excluded counts ---
             var excludedTrackIds = new HashSet<string>(StringComparer.Ordinal);
+            var excludedCountPerAlbumId = new Dictionary<string, int>(StringComparer.Ordinal);
 
-            async Task AddPlaylistTracksTo(HashSet<string> set, string playlistId)
+            async Task AddPlaylistTracksTo(string playlistId)
             {
                 await foreach (var t in SpotifyApi.GetAllPlaylistTracksAsync(http, token, playlistId))
-                    if (!string.IsNullOrWhiteSpace(t?.Uri) && t.Uri.StartsWith("spotify:track:"))
-                        set.Add(t.Uri);
+                {
+                    if (string.IsNullOrWhiteSpace(t?.Uri) || !t.Uri.StartsWith("spotify:track:")) continue;
+                    excludedTrackIds.Add(t.Uri);
+                    var aid = t.Album?.Id;
+                    if (!string.IsNullOrWhiteSpace(aid))
+                        excludedCountPerAlbumId[aid!] = excludedCountPerAlbumId.GetValueOrDefault(aid!, 0) + 1;
+                }
             }
 
-            // Filler
-            await AddPlaylistTracksTo(excludedTrackIds, cfg.FillerPlaylistId);
-            // Single excluded playlist (optional)
+            // filler
+            await AddPlaylistTracksTo(cfg.FillerPlaylistId);
+            // single extra excluded playlist (optional)
             if (!string.IsNullOrWhiteSpace(cfg.ExcludedPlaylistId))
-                await AddPlaylistTracksTo(excludedTrackIds, cfg.ExcludedPlaylistId!);
+                await AddPlaylistTracksTo(cfg.ExcludedPlaylistId!);
 
-            // ---- Aggregate with weights; global de-dup ----
+            // --- aggregate albums with weights; skip singles & compilations; global de-dup ---
             var albums = new Dictionary<string, AlbumAggregate>(StringComparer.Ordinal);
             var seenTrackIds = new HashSet<string>(StringComparer.Ordinal);
 
             foreach (var (stars, playlistId) in cfg.StarPlaylists.OrderByDescending(kv => kv.Key))
             {
                 var weight = starWeights.TryGetValue(stars, out var w) ? w : 0.0;
-                Console.WriteLine($"Reading {stars}★ playlist {playlistId} (weight {weight})...");
-                await foreach (var track in SpotifyApi.GetAllPlaylistTracksAsync(http, token, playlistId))
+
+                // Expected total (for sanity check)
+                var expected = await SpotifyApi.GetPlaylistTotalAsync(http, token, playlistId);
+
+                int fetched = 0, included = 0, skipExcluded = 0, skipDup = 0, skipNonAlbum = 0;
+
+                Console.WriteLine($"→ Reading {stars}★ playlist {playlistId} (weight {weight}, expected ~{expected} items)…");
+
+                await foreach (var track in SpotifyApi.GetAllPlaylistTracksAsync(http, token, playlistId, info => Console.WriteLine(info)))
                 {
-                    var albumType = track.Album?.AlbumType?.ToLowerInvariant();
-                    if (albumType is "single" or "compilation") continue;
+                    fetched++;
 
                     if (track?.Album?.Id is null || string.IsNullOrWhiteSpace(track.Uri)) continue;
                     if (!track.Uri.StartsWith("spotify:track:")) continue;
-                    if (excludedTrackIds.Contains(track.Uri)) continue;
-                    if (!seenTrackIds.Add(track.Uri)) continue;
+
+                    var albumType = track.Album.AlbumType?.ToLowerInvariant();
+                    if (albumType is "single" or "compilation") { skipNonAlbum++; continue; }
+
+                    if (excludedTrackIds.Contains(track.Uri)) { skipExcluded++; continue; }
+                    if (!seenTrackIds.Add(track.Uri)) { skipDup++; continue; }
 
                     var id = track.Album.Id;
                     if (!albums.TryGetValue(id, out var agg))
@@ -76,51 +92,49 @@ internal class Program
                             Score = 0,
                             StarCounts = new() { { 1, 0 }, { 2, 0 }, { 3, 0 }, { 4, 0 }, { 5, 0 } },
                             WeightedSum = 0.0,
-                            Denominator = 0
+                            Denominator = 0,
+                            TotalTracks = track.Album.TotalTracks
                         };
                         albums[id] = agg;
+                    }
+                    else if (agg.TotalTracks == 0 && track.Album.TotalTracks > 0)
+                    {
+                        agg.TotalTracks = track.Album.TotalTracks;
                     }
 
                     agg.Count += 1;
                     agg.Score += stars; // legacy
                     agg.StarCounts[stars] = agg.StarCounts.GetValueOrDefault(stars) + 1;
                     agg.WeightedSum += weight;
+                    included++;
                 }
+
+                Console.WriteLine($"   ✓ {stars}★: fetched {fetched}/{expected}, included {included}, " +
+                                  $"skipped excluded {skipExcluded}, dup {skipDup}, non-album {skipNonAlbum}");
             }
 
-            // ---- Compute denominators using full album tracklists minus excludes ----
+            // --- compute denominators WITHOUT per-album API calls ---
             foreach (var agg in albums.Values)
             {
-                var albumTracks = await SpotifyApi.GetAllAlbumTrackUrisAsync(http, token, agg.AlbumId);
-                if (albumTracks.Count == 0)
-                {
-                    // fallback: if Spotify didn’t return tracks (rare), approximate denom by rated tracks counted
-                    agg.Denominator = agg.Count;
-                    continue;
-                }
-
-                // Remove any tracks that are in filler/excluded playlists from the denominator
-                albumTracks.ExceptWith(excludedTrackIds);
-
-                agg.Denominator = albumTracks.Count;
+                var excludedOnAlbum = excludedCountPerAlbumId.GetValueOrDefault(agg.AlbumId);
+                var total = agg.TotalTracks > 0 ? agg.TotalTracks : agg.Count; // fallback if Spotify didn't send total_tracks
+                agg.Denominator = Math.Max(0, total - excludedOnAlbum);
             }
 
-            // ---- Rank by percentage, then by 5★ count, then by total rated tracks ----
+            // --- rank by percentage, then 5★ count, then total rated tracks; take top N (default 100) ---
             var ranked = albums.Values
-                .Where(a => a.Denominator > 0) // avoid divide-by-zero
+                .Where(a => a.Denominator > 0)
                 .OrderByDescending(a => a.Percent)
                 .ThenByDescending(a => a.StarCounts.GetValueOrDefault(5))
                 .ThenByDescending(a => a.Count)
                 .ThenBy(a => a.AlbumName)
                 .ToList();
 
-            var topN = EnvInt("TOP_N", 100);   // defaults to 100 if not set
-            var total = ranked.Count;          // (optional) if you want to display "Top 100 of X"
+            var topN = EnvInt("TOP_N", 100);
             ranked = ranked.Take(topN).ToList();
 
-            var title = $"Matt’s Favourite Albums — Top {ranked.Count} (by %)";
+            var title = $"Matt’s Favourite Albums — Top {ranked.Count} by %";
             var html = HtmlRenderer.Render(ranked, title);
-            
             var outPath = Path.Combine(cfg.OutputDir, "index.html");
             await File.WriteAllTextAsync(outPath, html, Encoding.UTF8);
 
@@ -130,12 +144,11 @@ internal class Program
         catch (Exception ex)
         {
             Console.Error.WriteLine("❌ " + ex.Message);
-            Console.Error.WriteLine("If this mentions a missing environment variable, set it in your Debug profile.");
             return 1;
         }
     }
 
-    // ---- Helpers ----
+    // ---------- helpers ----------
     private static string Env(string name, bool required = true)
     {
         var v = Environment.GetEnvironmentVariable(name);
@@ -161,7 +174,7 @@ internal class Program
 
     private static Dictionary<int, double> ParseStarWeights(string? csv)
     {
-        // default (balanced)
+        // default (balanced): 5:1, 4:0.8, 3:0.5, 2:0.25, 1:0.1
         var weights = new Dictionary<int, double> { { 5, 1.0 }, { 4, 0.8 }, { 3, 0.5 }, { 2, 0.25 }, { 1, 0.10 } };
         if (string.IsNullOrWhiteSpace(csv)) return weights;
 
@@ -170,7 +183,7 @@ internal class Program
             var kv = part.Split(':', 2, StringSplitOptions.TrimEntries);
             if (kv.Length != 2) continue;
             if (!int.TryParse(kv[0], out var stars)) continue;
-            if (!double.TryParse(kv[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var w)) continue;
+            if (!double.TryParse(kv[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var w)) continue;
             if (stars is < 1 or > 5) continue;
             weights[stars] = w;
         }
