@@ -23,6 +23,7 @@ a{color:inherit;text-decoration:none}
 .pills{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
 .pill{border:1px solid #eee;border-radius:999px;padding:2px 8px;font-size:.85rem}
 .pill strong{margin-right:4px}
+.footer{margin-top:24px;font-size:.85rem;color:#666}
 </style></head><body><h1>").Append(title).Append("</h1><div class=\"grid\">");
 
         foreach (var a in albums)
@@ -47,7 +48,10 @@ a{color:inherit;text-decoration:none}
             sb.Append("</article>");
         }
 
-        sb.Append("</div></body></html>");
+        var updated = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm 'UTC'");
+        sb.Append("</div><div class=\"footer\">Last updated: ")
+          .Append(updated)
+          .Append("</div></body></html>");
         return sb.ToString();
     }
 
