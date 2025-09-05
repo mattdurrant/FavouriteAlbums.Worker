@@ -1,0 +1,52 @@
+name: Build and Publish Favourite Albums (FTP)
+
+on:
+  schedule:
+    - cron: "5 6 * * *"   # daily 06:05 UTC; change/disable if you want
+  workflow_dispatch: {}
+
+jobs:
+  build-run-deploy:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: fav-albums-ftp
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore & build
+        run: dotnet build -c Release
+
+      - name: Run worker to generate HTML
+        env:
+          SPOTIFY_CLIENT_ID:       ${{ secrets.SPOTIFY_CLIENT_ID }}
+          SPOTIFY_CLIENT_SECRET:   ${{ secrets.SPOTIFY_CLIENT_SECRET }}
+          SPOTIFY_REFRESH_TOKEN:   ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
+          STAR_PLAYLISTS:          ${{ secrets.STAR_PLAYLISTS }}
+          FILLER_PLAYLIST_ID:      ${{ secrets.FILLER_PLAYLIST_ID }}
+          EXCLUDED_PLAYLIST_ID:    ${{ secrets.EXCLUDED_PLAYLIST_ID }}
+          OUTPUT_DIR:              out
+        run: dotnet run --project FavouriteAlbums.Worker/FavouriteAlbums.Worker.csproj -c Release
+
+      - name: Verify artifact exists
+        run: |
+          ls -la out
+          test -f out/index.html
+
+      - name: Upload via FTP
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.6
+        with:
+          server:     ${{ secrets.FTP_SERVER }}
+          username:   ${{ secrets.FTP_USERNAME }}
+          password:   ${{ secrets.FTP_PASSWORD }}
+          protocol:   ftp
+          port:       21
+          local-dir:  out/
+          server-dir: ${{ secrets.FTP_TARGET_DIR }}   # must end with /
