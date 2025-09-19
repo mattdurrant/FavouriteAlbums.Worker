@@ -53,6 +53,7 @@ internal class Program
             // --- aggregate albums with weights; skip singles & compilations; global de-dup ---
             var albums = new Dictionary<string, AlbumAggregate>(StringComparer.Ordinal);
             var seenTrackIds = new HashSet<string>(StringComparer.Ordinal);
+            var ratedTrackStars = new Dictionary<string, int>(StringComparer.Ordinal); // spotify:track:... -> 1..5
 
             foreach (var (stars, playlistId) in cfg.StarPlaylists.OrderByDescending(kv => kv.Key))
             {
@@ -71,6 +72,9 @@ internal class Program
 
                     if (track?.Album?.Id is null || string.IsNullOrWhiteSpace(track.Uri)) continue;
                     if (!track.Uri.StartsWith("spotify:track:")) continue;
+
+                    if (!ratedTrackStars.TryGetValue(track.Uri, out var prev) || stars > prev)
+                        ratedTrackStars[track.Uri] = stars;
 
                     var albumType = track.Album.AlbumType?.ToLowerInvariant();
                     if (albumType is "single" or "compilation") { skipNonAlbum++; continue; }
@@ -95,6 +99,12 @@ internal class Program
                             Denominator = 0,
                             TotalTracks = track.Album.TotalTracks
                         };
+
+                        if (track.Album.ReleaseDate is { } rd && rd.Length >= 4)
+                        {
+                            if (int.TryParse(rd.Substring(0, 4), out var year)) agg.ReleaseYear = year;
+                        }
+
                         albums[id] = agg;
                     }
                     else if (agg.TotalTracks == 0 && track.Album.TotalTracks > 0)
@@ -132,6 +142,41 @@ internal class Program
 
             var topN = EnvInt("TOP_N", 100);
             ranked = ranked.Take(topN).ToList();
+
+            static string OpenTrackUrl(string uri) =>
+                uri.StartsWith("spotify:track:", StringComparison.Ordinal)
+                ? "https://open.spotify.com/track/" + uri.Substring("spotify:track:".Length)
+                : uri;
+
+            string Stars(int? s)
+            {
+                if (s is null) return "";
+                var filled = new string('★', Math.Clamp(s.Value, 0, 5));
+                var hollow = new string('☆', 5 - Math.Clamp(s.Value, 0, 5));
+                return filled + hollow;
+            }
+
+            foreach (var a in ranked)
+            {
+                var tracks = new List<AlbumTrackView>();
+                await foreach (var t in SpotifyApi.GetAlbumTracksDetailedAsync(http, token, a.AlbumId))
+                {
+                    // Hide filler/excluded tracks in the rendered list (they're also excluded from scoring)
+                    if (excludedTrackIds.Contains(t.Uri)) continue;
+
+                    tracks.Add(new AlbumTrackView
+                    {
+                        Number = t.TrackNumber,
+                        Name = t.Name,
+                        Url = OpenTrackUrl(t.Uri),
+                        Stars = ratedTrackStars.TryGetValue(t.Uri, out var s) ? s : (int?)null
+                    });
+                }
+
+                // sort by track number (API is ordered but be safe)
+                a.Tracks.Clear();
+                a.Tracks.AddRange(tracks.OrderBy(x => x.Number));
+            }
 
             var title = $"Matt’s Favourite Albums — Top {ranked.Count} by %";
             var html = HtmlRenderer.Render(ranked, title);

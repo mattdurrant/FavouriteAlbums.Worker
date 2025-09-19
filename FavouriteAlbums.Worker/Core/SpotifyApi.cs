@@ -52,7 +52,7 @@ public static class SpotifyApi
     Action<string>? onInfo = null)
     {
         string? next = $"https://api.spotify.com/v1/playlists/{playlistId}/tracks" +
-                       $"?limit=100&fields=items(track(album(id,name,images,artists(name),uri,album_type,total_tracks),name,uri)),next";
+                       $"?limit=100&fields=items(track(album(id,name,images,artists(name),uri,album_type,total_tracks,release_date,release_date_precision),name,uri)),next";
 
         while (next is not null)
         {
@@ -144,6 +144,48 @@ public static class SpotifyApi
         return result;
     }
 
+    public static async IAsyncEnumerable<AlbumTrackItem> GetAlbumTracksDetailedAsync(
+    HttpClient http, string accessToken, string albumId)
+    {
+        string? next = $"https://api.spotify.com/v1/albums/{albumId}/tracks?limit=50&fields=items(track_number,name,uri),next";
+
+        while (next is not null)
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, next);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+            var res = await http.SendAsync(req);
+            if ((int)res.StatusCode == 429)
+            {
+                var retryAfter = res.Headers.TryGetValues("Retry-After", out var vals) &&
+                                 int.TryParse(vals.FirstOrDefault(), out var sec)
+                                 ? sec : 2;
+                await Task.Delay(TimeSpan.FromSeconds(retryAfter));
+                continue;
+            }
+            res.EnsureSuccessStatusCode();
+
+            using var stream = await res.Content.ReadAsStreamAsync();
+            using var doc = JsonDocument.Parse(stream);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty("items", out var items) && items.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var it in items.EnumerateArray())
+                {
+                    yield return new AlbumTrackItem
+                    {
+                        TrackNumber = it.TryGetProperty("track_number", out var n) ? n.GetInt32() : 0,
+                        Name = it.TryGetProperty("name", out var nm) ? nm.GetString() ?? "" : "",
+                        Uri = it.TryGetProperty("uri", out var u) ? u.GetString() ?? "" : ""
+                    };
+                }
+            }
+
+            next = root.TryGetProperty("next", out var nextEl) ? nextEl.GetString() : null;
+        }
+    }
+
     public sealed class TokenResponse
     {
         public string? AccessToken { get; set; }
@@ -151,4 +193,12 @@ public static class SpotifyApi
         public int ExpiresIn { get; set; }
         public string? Scope { get; set; }
     }
+
+    public sealed class AlbumTrackItem
+    {
+        public int TrackNumber { get; set; }
+        public string Name { get; set; } = "";
+        public string Uri { get; set; } = "";
+    }
+
 }
