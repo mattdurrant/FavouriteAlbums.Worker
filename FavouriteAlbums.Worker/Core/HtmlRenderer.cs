@@ -18,6 +18,7 @@ public static class HtmlRenderer
 
         // Optional page heading
         sb.Append("<header><h1>").Append(Html(title)).Append("</h1></header><main>");
+        sb.Append("My favourite albums as determined by my Spotify account (<a href = \"https://github.com/mattdurrant/FavouriteAlbums.Worker\">source code</a>)");
 
         // ---- table layout like your sample ----
         sb.Append(@"<table class=""albums""><tbody>");
