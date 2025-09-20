@@ -23,7 +23,7 @@ internal class Program
                 ExcludedPlaylistId = Environment.GetEnvironmentVariable("EXCLUDED_PLAYLIST_ID")
             };
             var starWeights = ParseStarWeights(Environment.GetEnvironmentVariable("STAR_WEIGHTS")); // optional override
-            var topN = EnvInt("TOP_N", 100);
+            var topN = EnvInt("TOP_N", 250);
 
             Directory.CreateDirectory(cfg.OutputDir);
 
