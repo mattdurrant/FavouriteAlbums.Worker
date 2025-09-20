@@ -205,7 +205,7 @@ internal class Program
             }
 
             // --- render & write HTML + persist cache ---
-            var title = $"Matt’s Favourite Albums — Top {ranked.Count} by % (of {totalEligible})";
+            var title = $"{ranked.Count} Favourite Albums";
             var html = HtmlRenderer.Render(ranked, title);
             var outPath = Path.Combine(cfg.OutputDir, "index.html");
             await File.WriteAllTextAsync(outPath, html, Encoding.UTF8);
