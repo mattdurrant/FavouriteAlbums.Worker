@@ -1,5 +1,6 @@
 ﻿using System.Globalization;
 using System.Text;
+using System.Text.Json;
 using FavouriteAlbums.Core;
 
 namespace FavouriteAlbums.Worker;
@@ -22,6 +23,7 @@ internal class Program
                 ExcludedPlaylistId = Environment.GetEnvironmentVariable("EXCLUDED_PLAYLIST_ID")
             };
             var starWeights = ParseStarWeights(Environment.GetEnvironmentVariable("STAR_WEIGHTS")); // optional override
+            var topN = EnvInt("TOP_N", 100);
 
             Directory.CreateDirectory(cfg.OutputDir);
 
@@ -34,7 +36,7 @@ internal class Program
 
             async Task AddPlaylistTracksTo(string playlistId)
             {
-                await foreach (var t in SpotifyApi.GetAllPlaylistTracksAsync(http, token, playlistId))
+                await foreach (var t in SpotifyApi.GetAllPlaylistTracksAsync(http, token, playlistId, info => Console.WriteLine(info)))
                 {
                     if (string.IsNullOrWhiteSpace(t?.Uri) || !t.Uri.StartsWith("spotify:track:")) continue;
                     excludedTrackIds.Add(t.Uri);
@@ -53,6 +55,8 @@ internal class Program
             // --- aggregate albums with weights; skip singles & compilations; global de-dup ---
             var albums = new Dictionary<string, AlbumAggregate>(StringComparer.Ordinal);
             var seenTrackIds = new HashSet<string>(StringComparer.Ordinal);
+
+            // keep stars per track so we can render ★ later
             var ratedTrackStars = new Dictionary<string, int>(StringComparer.Ordinal); // spotify:track:... -> 1..5
 
             foreach (var (stars, playlistId) in cfg.StarPlaylists.OrderByDescending(kv => kv.Key))
@@ -73,12 +77,11 @@ internal class Program
                     if (track?.Album?.Id is null || string.IsNullOrWhiteSpace(track.Uri)) continue;
                     if (!track.Uri.StartsWith("spotify:track:")) continue;
 
-                    if (!ratedTrackStars.TryGetValue(track.Uri, out var prev) || stars > prev)
-                        ratedTrackStars[track.Uri] = stars;
-
+                    // Skip singles & compilations
                     var albumType = track.Album.AlbumType?.ToLowerInvariant();
                     if (albumType is "single" or "compilation") { skipNonAlbum++; continue; }
 
+                    // Skip excluded tracks + global de-dup
                     if (excludedTrackIds.Contains(track.Uri)) { skipExcluded++; continue; }
                     if (!seenTrackIds.Add(track.Uri)) { skipDup++; continue; }
 
@@ -93,17 +96,16 @@ internal class Program
                             ImageUrl = track.Album.Images?.OrderByDescending(i => i.Width).FirstOrDefault()?.Url ?? "",
                             Uri = track.Album.Uri ?? "",
                             Count = 0,
-                            Score = 0,
+                            Score = 0, // legacy
                             StarCounts = new() { { 1, 0 }, { 2, 0 }, { 3, 0 }, { 4, 0 }, { 5, 0 } },
                             WeightedSum = 0.0,
                             Denominator = 0,
                             TotalTracks = track.Album.TotalTracks
                         };
 
-                        if (track.Album.ReleaseDate is { } rd && rd.Length >= 4)
-                        {
-                            if (int.TryParse(rd.Substring(0, 4), out var year)) agg.ReleaseYear = year;
-                        }
+                        // capture year if available (playlist items can include release_date)
+                        if (track.Album.ReleaseDate is { } rd && rd.Length >= 4 && int.TryParse(rd[..4], out var year))
+                            agg.ReleaseYear = year;
 
                         albums[id] = agg;
                     }
@@ -116,6 +118,11 @@ internal class Program
                     agg.Score += stars; // legacy
                     agg.StarCounts[stars] = agg.StarCounts.GetValueOrDefault(stars) + 1;
                     agg.WeightedSum += weight;
+
+                    // remember the best star value seen for this track
+                    if (!ratedTrackStars.TryGetValue(track.Uri, out var prev) || stars > prev)
+                        ratedTrackStars[track.Uri] = stars;
+
                     included++;
                 }
 
@@ -131,7 +138,7 @@ internal class Program
                 agg.Denominator = Math.Max(0, total - excludedOnAlbum);
             }
 
-            // --- rank by percentage, then 5★ count, then total rated tracks; take top N (default 100) ---
+            // --- rank by percentage, then 5★ count, then total rated tracks ---
             var ranked = albums.Values
                 .Where(a => a.Denominator > 0)
                 .OrderByDescending(a => a.Percent)
@@ -140,48 +147,70 @@ internal class Program
                 .ThenBy(a => a.AlbumName)
                 .ToList();
 
-            var topN = EnvInt("TOP_N", 100);
+            var totalEligible = ranked.Count;
             ranked = ranked.Take(topN).ToList();
 
-            static string OpenTrackUrl(string uri) =>
-                uri.StartsWith("spotify:track:", StringComparison.Ordinal)
-                ? "https://open.spotify.com/track/" + uri.Substring("spotify:track:".Length)
-                : uri;
-
-            string Stars(int? s)
-            {
-                if (s is null) return "";
-                var filled = new string('★', Math.Clamp(s.Value, 0, 5));
-                var hollow = new string('☆', 5 - Math.Clamp(s.Value, 0, 5));
-                return filled + hollow;
-            }
+            // --- cache-aware per-album tracklists (Top N only) ---
+            var cacheUrl = Environment.GetEnvironmentVariable("CACHE_URL")
+                           ?? "https://albums.mattdurrant.com/cache/albums.json";
+            var cacheTtlDays = int.TryParse(Environment.GetEnvironmentVariable("CACHE_TTL_DAYS"), out var d) ? d : 30;
+            var albumCache = await LoadAlbumCacheAsync(http, cacheUrl);
 
             foreach (var a in ranked)
             {
+                if (albumCache.TryGetValue(a.AlbumId, out var entry) &&
+                    (DateTime.UtcNow - entry.FetchedUtc).TotalDays <= cacheTtlDays &&
+                    entry.Tracks.Count > 0)
+                {
+                    a.Tracks.Clear();
+                    a.Tracks.AddRange(entry.Tracks.Select(t => new AlbumTrackView
+                    {
+                        Number = t.Number,
+                        Name = t.Name,
+                        Url = t.Url
+                    }));
+                    continue;
+                }
+
                 var tracks = new List<AlbumTrackView>();
                 await foreach (var t in SpotifyApi.GetAlbumTracksDetailedAsync(http, token, a.AlbumId))
                 {
-                    // Hide filler/excluded tracks in the rendered list (they're also excluded from scoring)
-                    if (excludedTrackIds.Contains(t.Uri)) continue;
-
+                    if (excludedTrackIds.Contains(t.Uri)) continue; // hide filler/excluded in display
                     tracks.Add(new AlbumTrackView
                     {
                         Number = t.TrackNumber,
                         Name = t.Name,
-                        Url = OpenTrackUrl(t.Uri),
-                        Stars = ratedTrackStars.TryGetValue(t.Uri, out var s) ? s : (int?)null
+                        Url = OpenTrackUrl(t.Uri)
                     });
                 }
-
-                // sort by track number (API is ordered but be safe)
+                tracks.Sort((x, y) => x.Number.CompareTo(y.Number));
                 a.Tracks.Clear();
-                a.Tracks.AddRange(tracks.OrderBy(x => x.Number));
+                a.Tracks.AddRange(tracks);
+
+                albumCache[a.AlbumId] = new CacheEntry
+                {
+                    FetchedUtc = DateTime.UtcNow,
+                    Tracks = tracks
+                };
             }
 
-            var title = $"Matt’s Favourite Albums — Top {ranked.Count} by %";
+            // apply latest star values to displayed tracks (don’t cache stars)
+            foreach (var a in ranked)
+            {
+                foreach (var t in a.Tracks)
+                {
+                    var key = ToSpotifyTrackUriKey(t.Url);
+                    if (key is not null && ratedTrackStars.TryGetValue(key, out var s)) t.Stars = s;
+                }
+            }
+
+            // --- render & write HTML + persist cache ---
+            var title = $"Matt’s Favourite Albums — Top {ranked.Count} by % (of {totalEligible})";
             var html = HtmlRenderer.Render(ranked, title);
             var outPath = Path.Combine(cfg.OutputDir, "index.html");
             await File.WriteAllTextAsync(outPath, html, Encoding.UTF8);
+
+            await SaveAlbumCacheAsync(albumCache, cfg.OutputDir);
 
             Console.WriteLine($"✅ Wrote {outPath}");
             return 0;
@@ -194,6 +223,7 @@ internal class Program
     }
 
     // ---------- helpers ----------
+
     private static string Env(string name, bool required = true)
     {
         var v = Environment.GetEnvironmentVariable(name);
@@ -239,5 +269,56 @@ internal class Program
     {
         var v = Environment.GetEnvironmentVariable(name);
         return int.TryParse(v, out var n) && n > 0 ? n : @default;
+    }
+
+    private static string OpenTrackUrl(string uri)
+    {
+        const string prefix = "spotify:track:";
+        if (!string.IsNullOrWhiteSpace(uri) && uri.StartsWith(prefix, StringComparison.Ordinal))
+            return "https://open.spotify.com/track/" + uri[prefix.Length..];
+        return uri;
+    }
+
+    private static string? ToSpotifyTrackUriKey(string url)
+    {
+        const string prefix = "https://open.spotify.com/track/";
+        if (url.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            var idPart = url[prefix.Length..];
+            var q = idPart.IndexOf('?', StringComparison.Ordinal);
+            if (q >= 0) idPart = idPart[..q];
+            return "spotify:track:" + idPart;
+        }
+        return null;
+    }
+
+    // ---- very-lightweight album track cache persisted to out/cache/albums.json ----
+    private sealed class CacheEntry
+    {
+        public DateTime FetchedUtc { get; set; }
+        public List<AlbumTrackView> Tracks { get; set; } = new();
+    }
+
+    private static async Task<Dictionary<string, CacheEntry>> LoadAlbumCacheAsync(HttpClient http, string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return new();
+        try
+        {
+            var json = await http.GetStringAsync(url);
+            return JsonSerializer.Deserialize<Dictionary<string, CacheEntry>>(json) ?? new();
+        }
+        catch
+        {
+            return new(); // 404/timeout -> empty cache
+        }
+    }
+
+    private static async Task SaveAlbumCacheAsync(Dictionary<string, CacheEntry> cache, string outputDir)
+    {
+        var dir = Path.Combine(outputDir, "cache");
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "albums.json");
+        var json = JsonSerializer.Serialize(cache, new JsonSerializerOptions { WriteIndented = false });
+        await File.WriteAllTextAsync(path, json, Encoding.UTF8);
     }
 }

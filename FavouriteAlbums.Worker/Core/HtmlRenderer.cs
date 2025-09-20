@@ -13,6 +13,7 @@ public static class HtmlRenderer
 <meta name=""viewport"" content=""width=device-width, initial-scale=1"">
 <title>").Append(Html(title)).Append(@"</title>
 <link rel=""stylesheet"" href=""https://www.mattdurrant.com/styles.css"">
+<link rel=""stylesheet"" type=""text/css"" href=""https://www.mattdurrant.com//albums.css""> 
 </head><body class=""albums-page"">");
 
         // Optional page heading

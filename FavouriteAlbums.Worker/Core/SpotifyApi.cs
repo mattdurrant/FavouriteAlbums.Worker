@@ -1,39 +1,43 @@
 ﻿using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using FavouriteAlbums.Core; // for SimplifiedTrack & friends in Models.cs
 
 namespace FavouriteAlbums.Core;
 
 public static class SpotifyApi
 {
-    static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
-
-    public static async Task<string> GetAccessTokenAsync(HttpClient http, string clientId, string clientSecret, string refreshToken)
+    // Json options (case-insensitive names)
+    private static readonly JsonSerializerOptions Json = new()
     {
-        // Be defensive about stray quotes/whitespace from copy-paste
-        clientId = clientId.Trim();
-        clientSecret = clientSecret.Trim();
-        refreshToken = refreshToken.Trim();
+        PropertyNameCaseInsensitive = true
+    };
 
+    /// <summary>
+    /// Exchange a refresh token for a short-lived access token.
+    /// </summary>
+    public static async Task<string> GetAccessTokenAsync(
+        HttpClient http, string clientId, string clientSecret, string refreshToken)
+    {
         using var req = new HttpRequestMessage(HttpMethod.Post, "https://accounts.spotify.com/api/token");
+
+        req.Content = new FormUrlEncodedContent(new[]
+        {
+            new KeyValuePair<string,string>("grant_type", "refresh_token"),
+            new KeyValuePair<string,string>("refresh_token", refreshToken),
+        });
+
+        // Basic auth header with clientId:clientSecret
         var basic = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{clientId}:{clientSecret}"));
         req.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);
-        req.Content = new FormUrlEncodedContent(new Dictionary<string, string>
-        {
-            ["grant_type"] = "refresh_token",
-            ["refresh_token"] = refreshToken
-        });
 
         var res = await http.SendAsync(req);
         var body = await res.Content.ReadAsStringAsync();
 
         if (!res.IsSuccessStatusCode)
-        {
             throw new InvalidOperationException(
                 $"Spotify token request failed: {(int)res.StatusCode} {res.ReasonPhrase}\nBody: {body}");
-        }
 
-        // 👇 Robust parse (handles snake_case without DTOs)
         using var doc = JsonDocument.Parse(body);
         if (!doc.RootElement.TryGetProperty("access_token", out var atEl))
             throw new InvalidOperationException($"Spotify token response missing access_token.\nBody: {body}");
@@ -45,14 +49,23 @@ public static class SpotifyApi
         return accessToken!;
     }
 
+    /// <summary>
+    /// Stream all tracks in a playlist (paginated). Includes album fields we need:
+    /// album_type, total_tracks, release_date(+precision).
+    /// Politely backs off on 429 using Retry-After.
+    /// </summary>
     public static async IAsyncEnumerable<SimplifiedTrack> GetAllPlaylistTracksAsync(
-    HttpClient http,
-    string accessToken,
-    string playlistId,
-    Action<string>? onInfo = null)
+        HttpClient http,
+        string accessToken,
+        string playlistId,
+        Action<string>? onInfo = null)
     {
-        string? next = $"https://api.spotify.com/v1/playlists/{playlistId}/tracks" +
-                       $"?limit=100&fields=items(track(album(id,name,images,artists(name),uri,album_type,total_tracks,release_date,release_date_precision),name,uri)),next";
+        string? next =
+            $"https://api.spotify.com/v1/playlists/{playlistId}/tracks" +
+            $"?limit=100&fields=items(track(" +
+              "album(id,name,images,artists(name),uri,album_type,total_tracks,release_date,release_date_precision)," +
+              "name,uri" +
+            ")),next";
 
         while (next is not null)
         {
@@ -62,92 +75,84 @@ public static class SpotifyApi
             var res = await http.SendAsync(req);
             if ((int)res.StatusCode == 429)
             {
-                var retryAfter = res.Headers.TryGetValues("Retry-After", out var vals) && int.TryParse(vals.FirstOrDefault(), out var sec)
-                    ? sec : 2;
+                var retryAfter = 2;
+                if (res.Headers.TryGetValues("Retry-After", out var vals) &&
+                    int.TryParse(vals.FirstOrDefault(), out var sec))
+                    retryAfter = sec;
+
                 onInfo?.Invoke($"⚠️ 429 from Spotify. Waiting {retryAfter}s then retrying…");
                 await Task.Delay(TimeSpan.FromSeconds(retryAfter));
                 // retry same URL
                 continue;
             }
+
             res.EnsureSuccessStatusCode();
 
             using var stream = await res.Content.ReadAsStreamAsync();
             var page = await JsonSerializer.DeserializeAsync<PlaylistTracksPage>(stream, Json);
+
             if (page?.Items is not null)
+            {
                 foreach (var it in page.Items)
+                {
                     if (it.Track is not null)
                         yield return it.Track;
+                }
+            }
 
             next = page?.Next;
         }
     }
 
+    /// <summary>
+    /// Get the playlist's expected 'tracks.total' count (for diagnostics).
+    /// Handles 429 with backoff.
+    /// </summary>
     public static async Task<int> GetPlaylistTotalAsync(HttpClient http, string accessToken, string playlistId)
     {
         var url = $"https://api.spotify.com/v1/playlists/{playlistId}?fields=tracks(total)";
-        using var req = new HttpRequestMessage(HttpMethod.Get, url);
-        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
-        var res = await http.SendAsync(req);
-        if ((int)res.StatusCode == 429)
+        while (true)
         {
-            var retryAfter = res.Headers.TryGetValues("Retry-After", out var vals) && int.TryParse(vals.FirstOrDefault(), out var sec)
-                ? sec : 2;
-            await Task.Delay(TimeSpan.FromSeconds(retryAfter));
-            return await GetPlaylistTotalAsync(http, accessToken, playlistId);
-        }
-        res.EnsureSuccessStatusCode();
-
-        using var stream = await res.Content.ReadAsStreamAsync();
-        using var doc = JsonDocument.Parse(stream);
-        var tracks = doc.RootElement.GetProperty("tracks");
-        return tracks.TryGetProperty("total", out var totalEl) ? totalEl.GetInt32() : 0;
-    }
-
-    public static async Task<HashSet<string>> GetAllAlbumTrackUrisAsync(HttpClient http, string accessToken, string albumId)
-    {
-        // Return URIs like "spotify:track:xyz" for all tracks on the album
-        var result = new HashSet<string>(StringComparer.Ordinal);
-        string? next = $"https://api.spotify.com/v1/albums/{albumId}/tracks?limit=50&fields=items(id,uri),next";
-
-        while (next is not null)
-        {
-            using var req = new HttpRequestMessage(HttpMethod.Get, next);
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-            using var res = await http.SendAsync(req);
-            res.EnsureSuccessStatusCode();
 
-            using var stream = await res.Content.ReadAsStreamAsync();
-            using var doc = JsonDocument.Parse(stream);
-            var root = doc.RootElement;
-
-            if (root.TryGetProperty("items", out var items) && items.ValueKind == JsonValueKind.Array)
+            var res = await http.SendAsync(req);
+            if ((int)res.StatusCode == 429)
             {
-                foreach (var item in items.EnumerateArray())
-                {
-                    if (item.TryGetProperty("uri", out var uriEl))
-                    {
-                        var uri = uriEl.GetString();
-                        if (!string.IsNullOrWhiteSpace(uri)) result.Add(uri!);
-                    }
-                    else if (item.TryGetProperty("id", out var idEl))
-                    {
-                        var id = idEl.GetString();
-                        if (!string.IsNullOrWhiteSpace(id)) result.Add($"spotify:track:{id}");
-                    }
-                }
+                var retryAfter = 2;
+                if (res.Headers.TryGetValues("Retry-After", out var vals) &&
+                    int.TryParse(vals.FirstOrDefault(), out var sec))
+                    retryAfter = sec;
+
+                await Task.Delay(TimeSpan.FromSeconds(retryAfter));
+                continue; // try again
             }
 
-            next = root.TryGetProperty("next", out var nextEl) ? nextEl.GetString() : null;
-        }
+            var body = await res.Content.ReadAsStringAsync();
+            if (!res.IsSuccessStatusCode)
+                throw new InvalidOperationException(
+                    $"Spotify playlist total failed: {(int)res.StatusCode} {res.ReasonPhrase}\nBody: {body}");
 
-        return result;
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty("tracks", out var tracks) &&
+                tracks.TryGetProperty("total", out var totalEl))
+            {
+                return totalEl.GetInt32();
+            }
+            return 0;
+        }
     }
 
+    /// <summary>
+    /// Stream detailed album tracks (track_number, name, uri) with 429 backoff.
+    /// Used only for Top-N albums to render per-track links.
+    /// </summary>
     public static async IAsyncEnumerable<AlbumTrackItem> GetAlbumTracksDetailedAsync(
-    HttpClient http, string accessToken, string albumId)
+        HttpClient http, string accessToken, string albumId)
     {
-        string? next = $"https://api.spotify.com/v1/albums/{albumId}/tracks?limit=50&fields=items(track_number,name,uri),next";
+        string? next =
+            $"https://api.spotify.com/v1/albums/{albumId}/tracks?limit=50&fields=items(track_number,name,uri),next";
 
         while (next is not null)
         {
@@ -157,12 +162,15 @@ public static class SpotifyApi
             var res = await http.SendAsync(req);
             if ((int)res.StatusCode == 429)
             {
-                var retryAfter = res.Headers.TryGetValues("Retry-After", out var vals) &&
-                                 int.TryParse(vals.FirstOrDefault(), out var sec)
-                                 ? sec : 2;
+                var retryAfter = 2;
+                if (res.Headers.TryGetValues("Retry-After", out var vals) &&
+                    int.TryParse(vals.FirstOrDefault(), out var sec))
+                    retryAfter = sec;
+
                 await Task.Delay(TimeSpan.FromSeconds(retryAfter));
                 continue;
             }
+
             res.EnsureSuccessStatusCode();
 
             using var stream = await res.Content.ReadAsStreamAsync();
@@ -186,13 +194,7 @@ public static class SpotifyApi
         }
     }
 
-    public sealed class TokenResponse
-    {
-        public string? AccessToken { get; set; }
-        public string? TokenType { get; set; }
-        public int ExpiresIn { get; set; }
-        public string? Scope { get; set; }
-    }
+    // ====== Internal DTOs for playlist paging & album track items ======
 
     public sealed class AlbumTrackItem
     {
@@ -201,4 +203,14 @@ public static class SpotifyApi
         public string Uri { get; set; } = "";
     }
 
+    private sealed class PlaylistTracksPage
+    {
+        public PlaylistItem[]? Items { get; set; }
+        public string? Next { get; set; }
+    }
+
+    private sealed class PlaylistItem
+    {
+        public SimplifiedTrack? Track { get; set; }
+    }
 }
