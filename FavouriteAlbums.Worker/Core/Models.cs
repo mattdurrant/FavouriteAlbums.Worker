@@ -71,7 +71,8 @@ public sealed class AlbumAggregate
     public double WeightedSum { get; set; }                  // sum of per-track weights (e.g., 1 + 0.8 + ...)
     public int Denominator { get; set; }                  // album.total_tracks - excludedOnAlbum
     public int TotalTracks { get; set; }                  // as reported by Spotify
-    public double Percent => Denominator > 0 ? (WeightedSum / Denominator) * 100.0 : 0.0;
+    public double RawPercent => Denominator > 0 ? (WeightedSum / Denominator) * 100.0 : 0.0;
+    public double Percent => RawPercent > 100.0 ? 100.0 : RawPercent; // display cap at 100
 
     // Nice-to-have metadata
     public int? ReleaseYear { get; set; }

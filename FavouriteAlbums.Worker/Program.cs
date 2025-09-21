@@ -1,5 +1,4 @@
-﻿using System.Globalization;
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
 using FavouriteAlbums.Core;
 
@@ -7,6 +6,8 @@ namespace FavouriteAlbums.Worker;
 
 internal class Program
 {
+    private static readonly double[] StarWeights = { 0.0, 0.10, 0.30, 0.60, 1.00, 1.20 };
+
     static async Task<int> Main()
     {
         try
@@ -22,7 +23,7 @@ internal class Program
                 FillerPlaylistId = Env("FILLER_PLAYLIST_ID"),
                 ExcludedPlaylistId = Environment.GetEnvironmentVariable("EXCLUDED_PLAYLIST_ID")
             };
-            var starWeights = ParseStarWeights(Environment.GetEnvironmentVariable("STAR_WEIGHTS")); // optional override
+            
             var topN = EnvInt("TOP_N", 250);
 
             Directory.CreateDirectory(cfg.OutputDir);
@@ -61,7 +62,7 @@ internal class Program
 
             foreach (var (stars, playlistId) in cfg.StarPlaylists.OrderByDescending(kv => kv.Key))
             {
-                var weight = starWeights.TryGetValue(stars, out var w) ? w : 0.0;
+                var weight = StarWeights[Math.Clamp(stars, 1, 5)];
 
                 // Expected total (for sanity check)
                 var expected = await SpotifyApi.GetPlaylistTotalAsync(http, token, playlistId);
@@ -144,7 +145,14 @@ internal class Program
             var ranked = RankOrder(allEligible).ToList();
 
             var totalEligible = ranked.Count;
-            ranked = ranked.Take(topN).ToList();
+           
+            ranked = albums.Values
+                .Where(a => a.Denominator > 0)
+                .OrderByDescending(a => a.RawPercent)               // <- unclipped for fair ordering
+                .ThenByDescending(a => a.StarCounts.GetValueOrDefault(5))
+                .ThenByDescending(a => a.Count)
+                .ThenBy(a => a.AlbumName)
+                .ToList();
 
             // --- build Top 10 per year buckets (using all eligible, not just Top N) ---
             var byYear = allEligible
@@ -345,24 +353,6 @@ internal class Program
         if (!Enumerable.Range(1, 5).All(dict.ContainsKey))
             throw new InvalidOperationException("STAR_PLAYLISTS must include all 1..5 entries.");
         return dict;
-    }
-
-    private static Dictionary<int, double> ParseStarWeights(string? csv)
-    {
-        // default (balanced): 5:1, 4:0.8, 3:0.5, 2:0.25, 1:0.1
-        var weights = new Dictionary<int, double> { { 5, 1.0 }, { 4, 0.8 }, { 3, 0.5 }, { 2, 0.25 }, { 1, 0.10 } };
-        if (string.IsNullOrWhiteSpace(csv)) return weights;
-
-        foreach (var part in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            var kv = part.Split(':', 2, StringSplitOptions.TrimEntries);
-            if (kv.Length != 2) continue;
-            if (!int.TryParse(kv[0], out var stars)) continue;
-            if (!double.TryParse(kv[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var w)) continue;
-            if (stars is < 1 or > 5) continue;
-            weights[stars] = w;
-        }
-        return weights;
     }
 
     private static int EnvInt(string name, int @default)
