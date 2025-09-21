@@ -139,24 +139,36 @@ internal class Program
             }
 
             // --- rank by percentage, then 5★ count, then total rated tracks ---
-            var ranked = albums.Values
-                .Where(a => a.Denominator > 0)
-                .OrderByDescending(a => a.Percent)
-                .ThenByDescending(a => a.StarCounts.GetValueOrDefault(5))
-                .ThenByDescending(a => a.Count)
-                .ThenBy(a => a.AlbumName)
-                .ToList();
+            // --- rank all eligible, then take Top N for the main page ---
+            var allEligible = albums.Values.Where(a => a.Denominator > 0).ToList();
+            var ranked = RankOrder(allEligible).ToList();
 
             var totalEligible = ranked.Count;
             ranked = ranked.Take(topN).ToList();
 
-            // --- cache-aware per-album tracklists (Top N only) ---
+            // --- build Top 10 per year buckets (using all eligible, not just Top N) ---
+            var byYear = allEligible
+                .Where(a => a.ReleaseYear.HasValue)
+                .GroupBy(a => a.ReleaseYear!.Value)
+                .ToDictionary(
+                    g => g.Key,
+                    g => RankOrder(g).Take(10).ToList()
+                );
+
+            // --- figure out which albums need detailed tracklists (union of Top N + all year Top10s) ---
+            var detailAlbumIds = new HashSet<string>(ranked.Select(a => a.AlbumId), StringComparer.Ordinal);
+            foreach (var list in byYear.Values)
+                foreach (var a in list)
+                    detailAlbumIds.Add(a.AlbumId);
+
+            // --- cache-aware per-album tracklists for just the selected albums ---
             var cacheUrl = Environment.GetEnvironmentVariable("CACHE_URL")
                            ?? "https://albums.mattdurrant.com/cache/albums.json";
             var cacheTtlDays = int.TryParse(Environment.GetEnvironmentVariable("CACHE_TTL_DAYS"), out var d) ? d : 30;
             var albumCache = await LoadAlbumCacheAsync(http, cacheUrl);
 
-            foreach (var a in ranked)
+            // local helper to fill Tracks for one album from cache or API
+            async Task EnsureTracksAsync(AlbumAggregate a)
             {
                 if (albumCache.TryGetValue(a.AlbumId, out var entry) &&
                     (DateTime.UtcNow - entry.FetchedUtc).TotalDays <= cacheTtlDays &&
@@ -169,13 +181,16 @@ internal class Program
                         Name = t.Name,
                         Url = t.Url
                     }));
-                    continue;
+                    return;
                 }
 
                 var tracks = new List<AlbumTrackView>();
                 await foreach (var t in SpotifyApi.GetAlbumTracksDetailedAsync(http, token, a.AlbumId))
                 {
-                    if (excludedTrackIds.Contains(t.Uri)) continue; // hide filler/excluded in display
+                    // Hide filler/excluded in display
+                    // (excludedTrackIds built earlier)
+                    if (excludedTrackIds.Contains(t.Uri)) continue;
+
                     tracks.Add(new AlbumTrackView
                     {
                         Number = t.TrackNumber,
@@ -194,9 +209,17 @@ internal class Program
                 };
             }
 
-            // apply latest star values to displayed tracks (don’t cache stars)
-            foreach (var a in ranked)
+            // Fill tracks for union set
+            foreach (var id in detailAlbumIds)
             {
+                var a = albums[id];
+                await EnsureTracksAsync(a);
+            }
+
+            // apply latest star values to displayed tracks (don’t cache stars)
+            foreach (var id in detailAlbumIds)
+            {
+                var a = albums[id];
                 foreach (var t in a.Tracks)
                 {
                     var key = ToSpotifyTrackUriKey(t.Url);
@@ -204,15 +227,46 @@ internal class Program
                 }
             }
 
-            // --- render & write HTML + persist cache ---
-            var title = $"{ranked.Count} Favourite Albums";
-            var html = HtmlRenderer.Render(ranked, title);
+            // --- render & write MAIN page ---
+            var title = $"Favourite {ranked.Count} albums";
+            var mainNav = @"<a href=""./years/"">Browse by year →</a>";   // was /years/
+            var html = HtmlRenderer.Render(ranked, title, mainNav);
             var outPath = Path.Combine(cfg.OutputDir, "index.html");
             await File.WriteAllTextAsync(outPath, html, Encoding.UTF8);
 
+            // --- render & write YEAR pages ---
+            var yearsDir = Path.Combine(cfg.OutputDir, "years");
+            Directory.CreateDirectory(yearsDir);
+
+            foreach (var kvp in byYear.OrderByDescending(k => k.Key)) // newest first
+            {
+                var year = kvp.Key;
+                var list = kvp.Value;
+                var yTitle = $"Favourite {list.Count} albums of {year}";
+                var yNav = @"<a href=""../"">← Back to main</a> • <a href=""./"">All years</a>";  // was "/" and "/years/"
+                var yHtml = HtmlRenderer.Render(list, yTitle, yNav);
+                var yPath = Path.Combine(yearsDir, $"{year}.html");
+                await File.WriteAllTextAsync(yPath, yHtml, Encoding.UTF8);
+            }
+
+            // --- optional: simple Year index page ---
+            var yearIndex = new StringBuilder();
+            yearIndex.Append(@"<!doctype html><html lang=""en""><head><meta charset=""utf-8"">
+<meta name=""viewport"" content=""width=device-width, initial-scale=1"">
+<title>Albums by Year</title>
+<link rel=""stylesheet"" href=""https://www.mattdurrant.com/styles.css"">
+<link rel=""stylesheet"" type=""text/css"" href=""/albums.css"">
+</head><body><main><h1>Albums by Year</h1><ul>");
+            foreach (var y in byYear.Keys.OrderByDescending(x => x))
+                yearIndex.Append($@"<li><a href=""./{y}.html"">Top 10 Albums — {y}</a></li>");
+            yearIndex.Append("</ul></main></body></html>");
+            await File.WriteAllTextAsync(Path.Combine(yearsDir, "index.html"), yearIndex.ToString(), Encoding.UTF8);
+
+            // --- persist cache for next run ---
             await SaveAlbumCacheAsync(albumCache, cfg.OutputDir);
 
-            Console.WriteLine($"✅ Wrote {outPath}");
+            Console.WriteLine($"✅ Wrote {outPath} and {byYear.Count} year pages to {yearsDir}");
+
             return 0;
         }
         catch (Exception ex)
@@ -223,6 +277,12 @@ internal class Program
     }
 
     // ---------- helpers ----------
+    private static IEnumerable<AlbumAggregate> RankOrder(IEnumerable<AlbumAggregate> src) =>
+    src.OrderByDescending(a => a.Percent)
+       .ThenByDescending(a => a.StarCounts.GetValueOrDefault(5))
+       .ThenByDescending(a => a.Count)
+       .ThenBy(a => a.AlbumName);
+
 
     private static string Env(string name, bool required = true)
     {

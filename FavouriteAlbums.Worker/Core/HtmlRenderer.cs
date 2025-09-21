@@ -4,7 +4,8 @@ namespace FavouriteAlbums.Core;
 
 public static class HtmlRenderer
 {
-    public static string Render(IEnumerable<AlbumAggregate> albums, string title)
+    // NEW: optional navHtml lets us inject tiny link bars per page
+    public static string Render(IEnumerable<AlbumAggregate> albums, string title, string? navHtml = null)
     {
         var sb = new StringBuilder();
 
@@ -13,39 +14,39 @@ public static class HtmlRenderer
 <meta name=""viewport"" content=""width=device-width, initial-scale=1"">
 <title>").Append(Html(title)).Append(@"</title>
 <link rel=""stylesheet"" href=""https://www.mattdurrant.com/styles.css"">
-<link rel=""stylesheet"" type=""text/css"" href=""https://www.mattdurrant.com//albums.css""> 
+<link rel=""stylesheet"" type=""text/css"" href=""https://www.mattdurrant.com/styles.css"">
 </head><body class=""albums-page"">");
 
-        // Optional page heading
-        sb.Append("<header><h1>").Append(Html(title)).Append("</h1></header><main>");
-        sb.Append("My favourite albums as determined by my Spotify account (<a href = \"https://github.com/mattdurrant/FavouriteAlbums.Worker\">source code</a>)");
+        // Header + optional subnav
+        sb.Append("<header><h1>").Append(Html(title)).Append("</h1>");
+        if (!string.IsNullOrWhiteSpace(navHtml))
+            sb.Append(@"<nav class=""subnav"">").Append(navHtml).Append("</nav>");
+        sb.Append("</header><main>");
 
-        // ---- table layout like your sample ----
+        // ---- table layout (rank / album-info-with-tracks / cover) ----
         sb.Append(@"<table class=""albums""><tbody>");
 
         int rank = 1;
         foreach (var a in albums)
         {
             var albumUrl = OpenAlbumUrl(a.Uri);
-            var scorePercent = a.Percent.ToString("0"); // integer percent (e.g. 98)
-            var artistsJoined = string.Join(", ", a.Artists);
-
+            var scorePercent = a.Percent.ToString("0"); // integer percent
             sb.Append("<tr>");
 
-            // Col 1: rank + % score
+            // Col 1: rank + %
             sb.Append("<td>")
               .Append(@"<div class=""rank"">").Append(rank).Append(".</div>")
               .Append(@"<div class=""score"">").Append(scorePercent).Append("%</div>")
               .Append("</td>");
 
-            // Col 2: album link, artist link(s), year, and per-track links with star glyphs
+            // Col 2: album/artist/year + linked track list with star glyphs
             sb.Append("<td>");
 
-            // album title links to open.spotify album
+            // album title → spotify album
             sb.Append(@"<a href=""").Append(albumUrl).Append(@""">")
               .Append(Html(a.AlbumName)).Append("</a><br>");
 
-            // artist links to your site (one link per artist)
+            // artists → your site (per-artist)
             if (a.Artists.Count > 0)
             {
                 for (int i = 0; i < a.Artists.Count; i++)
@@ -58,22 +59,15 @@ public static class HtmlRenderer
                 }
                 sb.Append("<br>");
             }
-            else
-            {
-                sb.Append(Html(artistsJoined)).Append("<br>");
-            }
 
-            // year (if known)
-            if (a.ReleaseYear is int year)
-                sb.Append(year).Append("<br>");
-
+            if (a.ReleaseYear is int year) sb.Append(year).Append("<br>");
             sb.Append("<br>");
 
-            // Track list (each title links to open.spotify track, with star glyphs for rated tracks)
+            // Track links + stars (only if we populated a.Tracks for this album)
             if (a.Tracks.Count > 0)
             {
                 int i = 0;
-                foreach (var t in a.Tracks)
+                foreach (var t in a.Tracks.OrderBy(t => t.Number))
                 {
                     i++;
                     sb.Append(@"<a href=""").Append(t.Url).Append(@""">")
@@ -88,7 +82,7 @@ public static class HtmlRenderer
 
             sb.Append("</td>");
 
-            // Col 3: album image (links to album)
+            // Col 3: cover image → spotify album
             sb.Append("<td>");
             if (!string.IsNullOrWhiteSpace(a.ImageUrl))
             {
@@ -123,15 +117,12 @@ public static class HtmlRenderer
 
     private static string Slug(string s)
     {
-        // very light slug: lowercase, spaces -> '-', strip non-url-friendly chars
         var sb = new StringBuilder(s.Length);
         foreach (var ch in s.Trim().ToLowerInvariant())
         {
             if (char.IsLetterOrDigit(ch)) sb.Append(ch);
             else if (char.IsWhiteSpace(ch) || ch == '_' || ch == '-') sb.Append('-');
-            // else drop punctuation
         }
-        // collapse multiple '-'
         var slug = sb.ToString();
         while (slug.Contains("--")) slug = slug.Replace("--", "-");
         return slug.Trim('-');
@@ -139,11 +130,10 @@ public static class HtmlRenderer
 
     private static string OpenAlbumUrl(string uri)
     {
-        // uri expected like "spotify:album:..."
         const string prefix = "spotify:album:";
         if (!string.IsNullOrWhiteSpace(uri) && uri.StartsWith(prefix, StringComparison.Ordinal))
-            return "https://open.spotify.com/album/" + uri.Substring(prefix.Length);
-        return uri; // already a web URL?
+            return "https://open.spotify.com/album/" + uri[prefix.Length..];
+        return uri;
     }
 
     private static string StarGlyphs(int stars)
