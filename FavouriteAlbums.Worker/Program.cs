@@ -227,10 +227,15 @@ internal class Program
                 }
             }
 
-            // --- render & write MAIN page ---
+            // Build the year range (2000..current, newest first)
+            var currentYear = DateTime.UtcNow.Year;
+            var allYears = Enumerable.Range(2000, currentYear - 2000 + 1).Reverse().ToList();
+
+            // MAIN page
             var title = $"Favourite {ranked.Count} albums";
-            var mainNav = @"<a href=""./years/"">Browse by year →</a>";   // was /years/
+            var mainNav = BuildMainBlurbWithSource() + BuildYearLinksHtml(isMainPage: true);
             var html = HtmlRenderer.Render(ranked, title, mainNav);
+
             var outPath = Path.Combine(cfg.OutputDir, "index.html");
             await File.WriteAllTextAsync(outPath, html, Encoding.UTF8);
 
@@ -238,14 +243,23 @@ internal class Program
             var yearsDir = Path.Combine(cfg.OutputDir, "years");
             Directory.CreateDirectory(yearsDir);
 
-            foreach (var kvp in byYear.OrderByDescending(k => k.Key)) // newest first
+            // Ensure we have an entry for every year (2000..current), even if empty
+            foreach (var y in allYears)
             {
-                var year = kvp.Key;
-                var list = kvp.Value;
-                var yTitle = $"Favourite {list.Count} albums of {year}";
-                var yNav = @"<a href=""../"">← Back to main</a> • <a href=""./"">All years</a>";  // was "/" and "/years/"
+                if (!byYear.ContainsKey(y)) byYear[y] = new List<AlbumAggregate>();
+            }
+
+            // make sure you generate every year page 2000..current, even if empty
+            for (int y = DateTime.UtcNow.Year; y >= 2000; y--)
+            {
+                if (!byYear.ContainsKey(y)) byYear[y] = new List<AlbumAggregate>();
+
+                var list = byYear[y];
+                var yTitle = $"Favourite {list.Count} albums of {y}";
+                var yNav = BuildYearLinksHtml(isMainPage: false);
+
                 var yHtml = HtmlRenderer.Render(list, yTitle, yNav);
-                var yPath = Path.Combine(yearsDir, $"{year}.html");
+                var yPath = Path.Combine(yearsDir, $"{y}.html");
                 await File.WriteAllTextAsync(yPath, yHtml, Encoding.UTF8);
             }
 
@@ -277,6 +291,32 @@ internal class Program
     }
 
     // ---------- helpers ----------
+    private static string BuildYearLinksHtml(bool isMainPage)
+    {
+        int start = 2000;
+        int end = DateTime.UtcNow.Year;
+
+        // Relative link bases
+        var prefix = isMainPage ? "./years/" : "./";
+        var allTimeHref = isMainPage ? "./" : "../";
+
+        var sb = new StringBuilder();
+        sb.Append($@"<a href=""{allTimeHref}"">All Time</a>");
+
+        for (int y = end; y >= start; y--)
+        {
+            sb.Append(" || ");
+            sb.Append($@"<a href=""{prefix}{y}.html"">{y}</a>");
+        }
+
+        return $@"<div class=""year-links"">{sb}</div>";
+    }
+
+    private static string BuildMainBlurbWithSource()
+    {
+        return @"<div class=""blurb"">My favourite albums as determined by my Spotify account (<a href=""https://github.com/mattdurrant/FavouriteAlbums.Worker"">source code</a>).</div>";
+    }
+
     private static IEnumerable<AlbumAggregate> RankOrder(IEnumerable<AlbumAggregate> src) =>
     src.OrderByDescending(a => a.Percent)
        .ThenByDescending(a => a.StarCounts.GetValueOrDefault(5))
