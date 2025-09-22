@@ -1,6 +1,7 @@
 ﻿using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using FavouriteAlbums.Core; // for SimplifiedTrack & friends in Models.cs
 
 namespace FavouriteAlbums.Core;
@@ -75,15 +76,10 @@ public static class SpotifyApi
             var res = await http.SendAsync(req);
             if ((int)res.StatusCode == 429)
             {
-                var retryAfter = 2;
-                if (res.Headers.TryGetValues("Retry-After", out var vals) &&
-                    int.TryParse(vals.FirstOrDefault(), out var sec))
-                    retryAfter = sec;
-
+                var retryAfter = GetRetryAfter(res);
                 onInfo?.Invoke($"⚠️ 429 from Spotify. Waiting {retryAfter}s then retrying…");
                 await Task.Delay(TimeSpan.FromSeconds(retryAfter));
-                // retry same URL
-                continue;
+                continue; // retry same URL
             }
 
             res.EnsureSuccessStatusCode();
@@ -97,6 +93,54 @@ public static class SpotifyApi
                 {
                     if (it.Track is not null)
                         yield return it.Track;
+                }
+            }
+
+            next = page?.Next;
+        }
+    }
+
+    /// <summary>
+    /// NEW: Stream playlist entries with added_at so we can pick the most-recent rating.
+    /// </summary>
+    public static async IAsyncEnumerable<PlaylistTrackEntry> GetAllPlaylistEntriesAsync(
+        HttpClient http,
+        string accessToken,
+        string playlistId,
+        Action<string>? onInfo = null)
+    {
+        string? next =
+            $"https://api.spotify.com/v1/playlists/{playlistId}/tracks" +
+            $"?limit=100&fields=items(added_at,track(" +
+              "album(id,name,images,artists(name),uri,album_type,total_tracks,release_date,release_date_precision)," +
+              "name,uri" +
+            ")),next";
+
+        while (next is not null)
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, next);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+            var res = await http.SendAsync(req);
+            if ((int)res.StatusCode == 429)
+            {
+                var retryAfter = GetRetryAfter(res);
+                onInfo?.Invoke($"⚠️ 429 from Spotify. Waiting {retryAfter}s then retrying…");
+                await Task.Delay(TimeSpan.FromSeconds(retryAfter));
+                continue;
+            }
+
+            res.EnsureSuccessStatusCode();
+
+            using var stream = await res.Content.ReadAsStreamAsync();
+            var page = await JsonSerializer.DeserializeAsync<PlaylistTracksPage>(stream, Json);
+
+            if (page?.Items is not null)
+            {
+                foreach (var it in page.Items)
+                {
+                    if (it.Track is not null)
+                        yield return new PlaylistTrackEntry { Track = it.Track, AddedAt = it.AddedAt };
                 }
             }
 
@@ -120,11 +164,7 @@ public static class SpotifyApi
             var res = await http.SendAsync(req);
             if ((int)res.StatusCode == 429)
             {
-                var retryAfter = 2;
-                if (res.Headers.TryGetValues("Retry-After", out var vals) &&
-                    int.TryParse(vals.FirstOrDefault(), out var sec))
-                    retryAfter = sec;
-
+                var retryAfter = GetRetryAfter(res);
                 await Task.Delay(TimeSpan.FromSeconds(retryAfter));
                 continue; // try again
             }
@@ -162,11 +202,7 @@ public static class SpotifyApi
             var res = await http.SendAsync(req);
             if ((int)res.StatusCode == 429)
             {
-                var retryAfter = 2;
-                if (res.Headers.TryGetValues("Retry-After", out var vals) &&
-                    int.TryParse(vals.FirstOrDefault(), out var sec))
-                    retryAfter = sec;
-
+                var retryAfter = GetRetryAfter(res);
                 await Task.Delay(TimeSpan.FromSeconds(retryAfter));
                 continue;
             }
@@ -194,13 +230,21 @@ public static class SpotifyApi
         }
     }
 
-    // ====== Internal DTOs for playlist paging & album track items ======
+    // ====== Types ======
 
     public sealed class AlbumTrackItem
     {
         public int TrackNumber { get; set; }
         public string Name { get; set; } = "";
         public string Uri { get; set; } = "";
+    }
+
+    public sealed class PlaylistTrackEntry
+    {
+        public SimplifiedTrack? Track { get; set; }
+
+        [JsonPropertyName("added_at")]
+        public DateTime? AddedAt { get; set; }
     }
 
     private sealed class PlaylistTracksPage
@@ -212,5 +256,12 @@ public static class SpotifyApi
     private sealed class PlaylistItem
     {
         public SimplifiedTrack? Track { get; set; }
+
+        [JsonPropertyName("added_at")]
+        public DateTime? AddedAt { get; set; }
     }
+
+    private static int GetRetryAfter(HttpResponseMessage res) =>
+        (res.Headers.TryGetValues("Retry-After", out var vals) && int.TryParse(vals.FirstOrDefault(), out var sec))
+            ? Math.Max(sec, 1) : 2;
 }

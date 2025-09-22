@@ -7,6 +7,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FavouriteAlbums.Worker", "F
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SpotifyAuthTool", "SpotifyAuthTool\SpotifyAuthTool.csproj", "{4D8A9B2D-724A-6868-DF98-0490EE9D92FD}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FavouriteAlbums.Tidier", "FavouriteAlbums.Tidier\FavouriteAlbums.Tidier.csproj", "{2978B1A1-9529-440F-BEE5-A5D194C68C6E}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -21,6 +23,10 @@ Global
 		{4D8A9B2D-724A-6868-DF98-0490EE9D92FD}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{4D8A9B2D-724A-6868-DF98-0490EE9D92FD}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{4D8A9B2D-724A-6868-DF98-0490EE9D92FD}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2978B1A1-9529-440F-BEE5-A5D194C68C6E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2978B1A1-9529-440F-BEE5-A5D194C68C6E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2978B1A1-9529-440F-BEE5-A5D194C68C6E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2978B1A1-9529-440F-BEE5-A5D194C68C6E}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
