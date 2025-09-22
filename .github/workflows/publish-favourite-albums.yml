@@ -31,6 +31,7 @@ jobs:
           FILLER_PLAYLIST_ID:      ${{ secrets.FILLER_PLAYLIST_ID }}
           EXCLUDED_PLAYLIST_ID:    ${{ secrets.EXCLUDED_PLAYLIST_ID }}
           OUTPUT_DIR:              out
+          DETAIL_FETCH_CONCURRENCY: 4
         run: dotnet run --project FavouriteAlbums.Worker/FavouriteAlbums.Worker.csproj -c Release
 
       - name: Verify artifact exists
