@@ -34,11 +34,11 @@ jobs:
           EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
           EBAY_MARKETPLACE: EBAY_GB
           EBAY_DELIVERY_CC: GB
-          EBAY_MAX_PRICE_GBP: '25'
+          EBAY_MAX_PRICE_GBP: '20'
           EBAY_QUERY_CONCURRENCY: '3'
           EBAY_PAGES_PER_QUERY: '2'
           EBAY_LIMIT_PER_PAGE: '50'
-          EBAY_MAX_RESULTS: '400'
+          EBAY_MAX_RESULTS: '500'
           PURCHASED_PLAYLIST_ID: '58lTRbjbHYbsPWPfn7ggKF'
       
           OUTPUT_DIR:              out
