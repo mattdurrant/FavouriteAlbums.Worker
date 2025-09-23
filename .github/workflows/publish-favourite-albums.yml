@@ -24,21 +24,22 @@ jobs:
 
       - name: Run worker to generate HTML
         env:
-          SPOTIFY_CLIENT_ID:       ${{ secrets.SPOTIFY_CLIENT_ID }}
-          SPOTIFY_CLIENT_SECRET:   ${{ secrets.SPOTIFY_CLIENT_SECRET }}
-          SPOTIFY_REFRESH_TOKEN:   ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
-          STAR_PLAYLISTS:          ${{ secrets.STAR_PLAYLISTS }}
-          FILLER_PLAYLIST_ID:      ${{ secrets.FILLER_PLAYLIST_ID }}
-          EXCLUDED_PLAYLIST_ID:    ${{ secrets.EXCLUDED_PLAYLIST_ID }}
-          EBAY_CLIENT_ID:          ${{ secrets.EBAY_CLIENT_ID }}
-          EBAY_CLIENT_SECRET:      ${{ secrets.EBAY_CLIENT_SECRET }}
+          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+          SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
+          SPOTIFY_REFRESH_TOKEN: ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
+          STAR_PLAYLISTS: '5:3Rs7e9KMwxCJroMpvMDpL8,4:3DGYY0Hj4RzydffF170y3Z,3:5noq8iSiMjSLH2e9t11NOv,2:1ABB6n1AFfTUEJTfCaopAY,1:532lvkCpc2oYKvmD4UmN0f'
+          FILLER_PLAYLIST_ID: 4GDdPGifkYK7WWk7HmL67v
+          EXCLUDED_PLAYLIST_ID: 2X8xwVpmCg0erBpNK9VgP3
+          EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
+          EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
           EBAY_MARKETPLACE: EBAY_GB
           EBAY_DELIVERY_CC: GB
           EBAY_MAX_PRICE_GBP: '25'
           EBAY_QUERY_CONCURRENCY: '3'
           EBAY_PAGES_PER_QUERY: '2'
           EBAY_LIMIT_PER_PAGE: '50'
-          EBAY_MAX_RESULTS: '400'          
+          EBAY_MAX_RESULTS: '400'
+      
           OUTPUT_DIR:              out
           DETAIL_FETCH_CONCURRENCY: 4
         run: dotnet run --project FavouriteAlbums.Worker/FavouriteAlbums.Worker.csproj -c Release
