@@ -39,6 +39,7 @@ jobs:
           EBAY_PAGES_PER_QUERY: '2'
           EBAY_LIMIT_PER_PAGE: '50'
           EBAY_MAX_RESULTS: '400'
+          PURCHASED_PLAYLIST_ID: '58lTRbjbHYbsPWPfn7ggKF'
       
           OUTPUT_DIR:              out
           DETAIL_FETCH_CONCURRENCY: 4
