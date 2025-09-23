@@ -69,7 +69,20 @@ public static class EbayApi
         {
             // Limit to Vinyl/Records category (176985) + your query
             const string vinylCategory = "176985";
-            var url = $"{baseUrl}?q={Uri.EscapeDataString(query)}&category_ids={vinylCategory}&limit={limitPerPage}&offset={offset}&filter={Uri.EscapeDataString(filter)}";
+
+            // Keep only 12" (and 10") records via aspect_filter (Record Size)
+            var allowedSizes = new[] { "12\"", "10\"" }; // change if you ever want to include 7"
+            var sizesJoined = string.Join('|', allowedSizes.Select(s => s.Replace("\"", "%22"))); // 12%22, 10%22
+            var aspect = $"categoryId:{vinylCategory},Record Size:{{{sizesJoined}}}";
+
+            var url = $"{baseUrl}"
+                    + $"?q={Uri.EscapeDataString(query)}"
+                    + $"&category_ids={vinylCategory}"
+                    + $"&aspect_filter={aspect}" // eBay Browse supports aspect_filter with categoryId + aspect. 
+                    + $"&limit={limitPerPage}"
+                    + $"&offset={offset}"
+                    + $"&filter={Uri.EscapeDataString(filter)}";
+
 
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);

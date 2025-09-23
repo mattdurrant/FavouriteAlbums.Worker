@@ -478,26 +478,26 @@ internal class Program
         var t = title.ToLowerInvariant();
 
         // hard excludes
-        if (t.Contains(" cd ") || t.EndsWith(" cd") || t.StartsWith("cd ") || t.Contains(" compact disc"))
-            return false;
-        if (t.Contains("cassette") || t.Contains("tape") || t.Contains("minidisc") || t.Contains(" md "))
-            return false;
-        if (t.Contains("dvd") || t.Contains("blu-ray") || t.Contains("vhs"))
+        if (t.Contains(" cd ") || t.EndsWith(" cd") || t.StartsWith("cd ") || t.Contains(" compact disc")) return false;
+        if (t.Contains("cassette") || t.Contains("tape") || t.Contains("minidisc") || t.Contains(" md ")) return false;
+        if (t.Contains("dvd") || t.Contains("blu-ray") || t.Contains("vhs")) return false;
+
+        // reject obvious 7" singles
+        if (t.Contains("7\"") || t.Contains("7”") || t.Contains(" 7in") || t.Contains(" 7 in") || t.Contains("7-inch") || t.Contains(" 7 inch"))
             return false;
 
         // inklings of vinyl
         if (t.Contains("vinyl")) return true;
 
         // common LP hints (avoid “help”, etc.)
-        if (t.Contains(" lp ") || t.EndsWith(" lp") || t.StartsWith("lp ") || t.Contains("(lp"))
-            return true;
+        if (t.Contains(" lp ") || t.EndsWith(" lp") || t.StartsWith("lp ") || t.Contains("(lp")) return true;
 
-        // sizes often present on listings
-        if (t.Contains("12\"") || t.Contains("10\"") || t.Contains("7\""))
-            return true;
+        // sizes often present on listings (12/10 only)
+        if (t.Contains("12\"") || t.Contains("10\"")) return true;
 
         return false;
     }
+
 
     private static string OpenTrackUrl(string uri)
     {
