@@ -30,6 +30,15 @@ jobs:
           STAR_PLAYLISTS:          ${{ secrets.STAR_PLAYLISTS }}
           FILLER_PLAYLIST_ID:      ${{ secrets.FILLER_PLAYLIST_ID }}
           EXCLUDED_PLAYLIST_ID:    ${{ secrets.EXCLUDED_PLAYLIST_ID }}
+          EBAY_CLIENT_ID:          ${{ secrets.EBAY_CLIENT_ID }}
+          EBAY_CLIENT_SECRET:      ${{ secrets.EBAY_CLIENT_SECRET }}
+          EBAY_MARKETPLACE: EBAY_GB
+          EBAY_DELIVERY_CC: GB
+          EBAY_MAX_PRICE_GBP: '25'
+          EBAY_QUERY_CONCURRENCY: '3'
+          EBAY_PAGES_PER_QUERY: '2'
+          EBAY_LIMIT_PER_PAGE: '50'
+          EBAY_MAX_RESULTS: '400'          
           OUTPUT_DIR:              out
           DETAIL_FETCH_CONCURRENCY: 4
         run: dotnet run --project FavouriteAlbums.Worker/FavouriteAlbums.Worker.csproj -c Release
