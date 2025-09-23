@@ -1,4 +1,5 @@
-﻿using System.Text;
+﻿using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using FavouriteAlbums.Core;
 
@@ -14,19 +15,50 @@ internal class Program
     {
         try
         {
-            // --- read env vars ---
+            // --- read env vars (normalize + validate BEFORE building cfg) ---
+            var spotifyClientId = Env("SPOTIFY_CLIENT_ID");
+            var spotifyClientSecret = Env("SPOTIFY_CLIENT_SECRET");
+            var spotifyRefreshToken = Env("SPOTIFY_REFRESH_TOKEN");
+            var outputDir = Environment.GetEnvironmentVariable("OUTPUT_DIR") ?? "out";
+            var topN = EnvInt("TOP_N", 100);
+
+            // Star playlists: parse, normalize, validate
+            var starPlaylistsRaw = ParseStarPlaylists(Env("STAR_PLAYLISTS"));
+            var starPlaylistsNorm = starPlaylistsRaw.ToDictionary(
+                kv => kv.Key,
+                kv => NormalizePlaylistId(kv.Value)
+            );
+
+            // Filler / Excluded: normalize + validate
+            var fillerIdRaw = Env("FILLER_PLAYLIST_ID");
+            var fillerId = NormalizePlaylistId(fillerIdRaw);
+
+            var excludedIdRaw = Environment.GetEnvironmentVariable("EXCLUDED_PLAYLIST_ID");
+            string? excludedId = null;
+            if (!string.IsNullOrWhiteSpace(excludedIdRaw))
+                excludedId = NormalizePlaylistId(excludedIdRaw);
+
+            // Validate IDs are base62 (22 alnum chars)
+            foreach (var (stars, pid) in starPlaylistsNorm)
+                RequireBase62($"{stars}★ in STAR_PLAYLISTS", pid);
+            RequireBase62("FILLER_PLAYLIST_ID", fillerId);
+            if (!string.IsNullOrWhiteSpace(excludedId))
+                RequireBase62("EXCLUDED_PLAYLIST_ID", excludedId!);
+
+            // Build cfg with INIT assignments only
             var cfg = new AppConfig
             {
-                SpotifyClientId = Env("SPOTIFY_CLIENT_ID"),
-                SpotifyClientSecret = Env("SPOTIFY_CLIENT_SECRET"),
-                SpotifyRefreshToken = Env("SPOTIFY_REFRESH_TOKEN"),
-                OutputDir = Environment.GetEnvironmentVariable("OUTPUT_DIR") ?? "out",
-                StarPlaylists = ParseStarPlaylists(Env("STAR_PLAYLISTS")),
-                FillerPlaylistId = Env("FILLER_PLAYLIST_ID"),
-                ExcludedPlaylistId = Environment.GetEnvironmentVariable("EXCLUDED_PLAYLIST_ID")
+                SpotifyClientId = spotifyClientId,
+                SpotifyClientSecret = spotifyClientSecret,
+                SpotifyRefreshToken = spotifyRefreshToken,
+                OutputDir = outputDir,
+                StarPlaylists = starPlaylistsNorm,
+                FillerPlaylistId = fillerId,
+                ExcludedPlaylistId = excludedId
             };
-            var topN = EnvInt("TOP_N", 100);
+
             Directory.CreateDirectory(cfg.OutputDir);
+
 
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(100) };
             var token = await SpotifyApi.GetAccessTokenAsync(http, cfg.SpotifyClientId, cfg.SpotifyClientSecret, cfg.SpotifyRefreshToken);
@@ -59,9 +91,19 @@ internal class Program
             foreach (var (stars, playlistId) in cfg.StarPlaylists.OrderByDescending(kv => kv.Key))
             {
                 var weight = StarWeights[Math.Clamp(stars, 1, 5)];
-                var expected = await SpotifyApi.GetPlaylistTotalAsync(http, token, playlistId);
-                int fetched = 0, included = 0, skipExcluded = 0, skipDup = 0, skipNonAlbum = 0;
 
+                Console.WriteLine($"→ Checking {stars}★ playlist id {playlistId}…");
+                int expected;
+                try
+                {
+                    expected = await SpotifyApi.GetPlaylistTotalAsync(http, token, playlistId);
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException($"Failed to read playlist {stars}★ id='{playlistId}': {ex.Message}", ex);
+                }
+
+                int fetched = 0, included = 0, skipExcluded = 0, skipDup = 0, skipNonAlbum = 0;
                 Console.WriteLine($"→ Reading {stars}★ playlist {playlistId} (weight {weight}, expected ~{expected} items)…");
 
                 await foreach (var track in SpotifyApi.GetAllPlaylistTracksAsync(http, token, playlistId, info => Console.WriteLine(info)))
@@ -260,6 +302,9 @@ internal class Program
                 await File.WriteAllTextAsync(yPath, yHtml, Encoding.UTF8);
             }
 
+            // --- build the eBay page from the same Top-100 set (safe to skip if creds not set) ---
+            await GenerateEbayPageAsync(http, ranked, cfg.OutputDir);
+
             // --- persist cache for next run ---
             await SaveAlbumCacheAsync(albumCache, cfg.OutputDir);
 
@@ -332,6 +377,63 @@ internal class Program
         return int.TryParse(v, out var n) && n > 0 ? n : @default;
     }
 
+    private static decimal EnvDecimal(string name, decimal @default)
+    {
+        var v = Environment.GetEnvironmentVariable(name);
+        return decimal.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? d : @default;
+    }
+
+    // Build more matchable eBay queries: strip edition suffixes/parentheses
+    private static string MakeEbayQuery(AlbumAggregate a)
+    {
+        string artist = (a.Artists.FirstOrDefault() ?? "").Trim();
+        string album = (a.AlbumName ?? "").Trim();
+
+        // strip parentheticals: "Album (Deluxe Edition)" -> "Album"
+        int i = album.IndexOf(" (", StringComparison.Ordinal);
+        if (i > 0) album = album[..i];
+
+        // strip after " - " or ":" which often carry edition/remaster info
+        foreach (var sep in new[] { " - ", ": " })
+        {
+            int j = album.IndexOf(sep, StringComparison.Ordinal);
+            if (j > 0) { album = album[..j]; break; }
+        }
+
+        artist = artist.Replace("’", "'"); // normalize apostrophes
+        album = album.Replace("’", "'");
+
+        return $"{artist} {album} vinyl";
+    }
+
+    // Extra heuristic to keep vinyl, ditch CDs/cassettes/DVDs
+    private static bool LooksLikeVinylTitle(string? title)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return false;
+        var t = title.ToLowerInvariant();
+
+        // hard excludes
+        if (t.Contains(" cd ") || t.EndsWith(" cd") || t.StartsWith("cd ") || t.Contains(" compact disc"))
+            return false;
+        if (t.Contains("cassette") || t.Contains("tape") || t.Contains("minidisc") || t.Contains(" md "))
+            return false;
+        if (t.Contains("dvd") || t.Contains("blu-ray") || t.Contains("vhs"))
+            return false;
+
+        // inklings of vinyl
+        if (t.Contains("vinyl")) return true;
+
+        // common LP hints (avoid “help”, etc.)
+        if (t.Contains(" lp ") || t.EndsWith(" lp") || t.StartsWith("lp ") || t.Contains("(lp"))
+            return true;
+
+        // sizes often present on listings
+        if (t.Contains("12\"") || t.Contains("10\"") || t.Contains("7\""))
+            return true;
+
+        return false;
+    }
+
     private static string OpenTrackUrl(string uri)
     {
         const string prefix = "spotify:track:";
@@ -381,5 +483,166 @@ internal class Program
         var path = Path.Combine(dir, "albums.json");
         var json = JsonSerializer.Serialize(cache, new JsonSerializerOptions { WriteIndented = false });
         await File.WriteAllTextAsync(path, json, Encoding.UTF8);
+    }
+
+    // ---------- eBay page generation ----------
+    private static async Task GenerateEbayPageAsync(
+        HttpClient http,
+        IEnumerable<AlbumAggregate> topAlbums,
+        string outputDir)
+    {
+        var clientId = (Environment.GetEnvironmentVariable("EBAY_CLIENT_ID") ?? "").Trim();
+        var clientSecret = (Environment.GetEnvironmentVariable("EBAY_CLIENT_SECRET") ?? "").Trim();
+
+        if (string.IsNullOrWhiteSpace(clientId) || string.IsNullOrWhiteSpace(clientSecret))
+        {
+            Console.WriteLine("eBay: EBAY_CLIENT_ID/EBAY_CLIENT_SECRET not set — skipping eBay page.");
+            return;
+        }
+
+        var marketplace = Environment.GetEnvironmentVariable("EBAY_MARKETPLACE") ?? "EBAY_GB";
+        var deliveryCc = Environment.GetEnvironmentVariable("EBAY_DELIVERY_CC") ?? "GB";
+        var maxTotalGbp = EnvDecimal("EBAY_MAX_PRICE_GBP", 25m);
+        var maxPages = EnvInt("EBAY_PAGES_PER_QUERY", 2);
+        var limitPerPage = EnvInt("EBAY_LIMIT_PER_PAGE", 50);
+        var concurrency = EnvInt("EBAY_QUERY_CONCURRENCY", 3);
+        var maxResultsOut = EnvInt("EBAY_MAX_RESULTS", 400);
+
+        Console.WriteLine($"eBay: building results (Total ≤ £{maxTotalGbp:0.##}, {marketplace}, deliver to {deliveryCc})…");
+
+        var ebayToken = await EbayApi.GetAppAccessTokenAsync(http, clientId, clientSecret);
+
+        var queries = topAlbums.Select(a => (Album: a, Query: MakeEbayQuery(a))).ToList();
+
+        var gate = new SemaphoreSlim(Math.Max(1, concurrency));
+        var bag = new System.Collections.Concurrent.ConcurrentDictionary<string, EbayApi.EbayItem>(StringComparer.Ordinal);
+        var rnd = new Random();
+
+        async Task RunQueryAsync((AlbumAggregate Album, string Query) q)
+        {
+            await gate.WaitAsync();
+            try
+            {
+                await foreach (var item in EbayApi.SearchAuctionsAsync(
+                    http,
+                    ebayToken,
+                    marketplace,
+                    deliveryCc,
+                    q.Query,
+                    maxPriceGbp: maxTotalGbp,
+                    limitPerPage: limitPerPage,
+                    maxPages: maxPages,
+                    log: s => Console.WriteLine($"   [{q.Query}] {s}")
+                ))
+                {
+                    if (!string.Equals(item.Currency, "GBP", StringComparison.OrdinalIgnoreCase)) continue;
+
+                    bool isAuction = item.BuyingOptions.Any(x => x.Equals("AUCTION", StringComparison.OrdinalIgnoreCase));
+                    bool isBuyNow = item.BuyingOptions.Any(x => x.Equals("FIXED_PRICE", StringComparison.OrdinalIgnoreCase));
+
+                    if (item.Total > maxTotalGbp) continue;
+
+                    if (isAuction)
+                    {
+                        if (!(item.EndTimeUtc is DateTime end) || end > DateTime.UtcNow.AddDays(2))
+                            continue; // auction not ending within 2 days
+                    }
+                    else if (!isBuyNow)
+                    {
+                        continue; // ignore other listing types
+                    }
+
+                    if (!LooksLikeVinylTitle(item.Title)) continue;
+
+                    bag.TryAdd(item.ItemId ?? Guid.NewGuid().ToString("N"), item);
+                }
+
+                await Task.Delay(150 + rnd.Next(75));
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"   ⚠️ eBay query failed for “{q.Query}”: {ex.GetType().Name}: {ex.Message}");
+            }
+            finally { gate.Release(); }
+        }
+
+        Console.WriteLine($"eBay: querying {queries.Count} album terms (concurrency {concurrency})…");
+        var tasks = queries.Select(RunQueryAsync).ToArray();
+        if (tasks.Length > 0) await Task.WhenAll(tasks);
+
+        Console.WriteLine($"eBay: got {bag.Count} unique items after filtering.");
+
+        if (bag.Count == 0)
+        {
+            // Write a minimal page so the pipeline succeeds and you can see it rendered
+            var outDir0 = Path.Combine(outputDir, "ebay");
+            Directory.CreateDirectory(outDir0);
+            var html0 = EbayRenderer.Render(Array.Empty<EbayRenderer.Row>(),
+                $"Vinyl deals ≤ £{maxTotalGbp:0} (eBay)",
+                navHtml: null);
+            var outPath0 = Path.Combine(outDir0, "index.html");
+            await File.WriteAllTextAsync(outPath0, html0, Encoding.UTF8);
+            Console.WriteLine("eBay: no matches found — wrote an empty results page.");
+            return;
+        }
+
+        // Auctions first (cheapest), then Buy-It-Now (cheapest)
+        var auctionItems = bag.Values
+            .Where(i => i.BuyingOptions.Any(x => x.Equals("AUCTION", StringComparison.OrdinalIgnoreCase)))
+            .OrderBy(i => i.Total)                              // price first
+            .ThenBy(i => i.EndTimeUtc ?? DateTime.MaxValue);    // tie-breaker: ends sooner
+
+        var buyNowItems = bag.Values
+            .Where(i => i.BuyingOptions.Any(x => x.Equals("FIXED_PRICE", StringComparison.OrdinalIgnoreCase)))
+            .OrderBy(i => i.Total);
+
+        var ordered = auctionItems.Concat(buyNowItems).Take(maxResultsOut).ToList();
+
+        var rows = ordered.Select(i => new EbayRenderer.Row(
+            Title: i.Title,
+            Url: i.WebUrl,
+            ImageUrl: i.ImageUrl,
+            Currency: i.Currency,
+            Total: i.Total,
+            IsAuction: i.BuyingOptions.Any(x => string.Equals(x, "AUCTION", StringComparison.OrdinalIgnoreCase)),
+            EndUtc: i.EndTimeUtc
+        )).ToList();
+
+        var outDir = Path.Combine(outputDir, "ebay");
+        Directory.CreateDirectory(outDir);
+
+        // No back-link from main page; you'll link to /ebay/ elsewhere on the site.
+        var htmlTitle = $"Vinyl deals ≤ £{maxTotalGbp:0} (eBay)";
+        var html = EbayRenderer.Render(rows, htmlTitle, navHtml: null);
+        var outPath = Path.Combine(outDir, "index.html");
+        await File.WriteAllTextAsync(outPath, html, Encoding.UTF8);
+
+        Console.WriteLine($"eBay: wrote {outPath} ({rows.Count} rows).");
+    }
+
+    // ---------- ID normalization/validation ----------
+    private static string NormalizePlaylistId(string s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return s ?? "";
+        s = s.Trim().Trim('"', '\'');
+        const string sp = "spotify:playlist:";
+        if (s.StartsWith(sp, StringComparison.OrdinalIgnoreCase)) return s[sp.Length..];
+
+        var idx = s.IndexOf("/playlist/", StringComparison.OrdinalIgnoreCase);
+        if (idx >= 0)
+        {
+            var rest = s[(idx + "/playlist/".Length)..];
+            var id = rest.Split(new[] { '?', '/', '"', '\'', ' ' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(id)) return id;
+        }
+        return s;
+    }
+
+    private static bool IsBase62(string id) => id.Length == 22 && id.All(char.IsLetterOrDigit);
+
+    private static void RequireBase62(string label, string id)
+    {
+        if (!IsBase62(id))
+            throw new InvalidOperationException($"{label} is not a valid Spotify playlist id (expected 22 alphanumeric chars). Got: '{id}'. If you pasted a URL, use just the ID.");
     }
 }
