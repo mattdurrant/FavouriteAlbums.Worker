@@ -20,7 +20,7 @@ internal class Program
             var spotifyClientSecret = Env("SPOTIFY_CLIENT_SECRET");
             var spotifyRefreshToken = Env("SPOTIFY_REFRESH_TOKEN");
             var outputDir = Environment.GetEnvironmentVariable("OUTPUT_DIR") ?? "out";
-            var topN = EnvInt("TOP_N", 100);
+            var topN = EnvInt("TOP_N", 250);
 
             // Star playlists: parse, normalize, validate
             var starPlaylistsRaw = ParseStarPlaylists(Env("STAR_PLAYLISTS"));
