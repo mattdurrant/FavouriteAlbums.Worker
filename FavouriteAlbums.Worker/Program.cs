@@ -63,6 +63,36 @@ internal class Program
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(100) };
             var token = await SpotifyApi.GetAccessTokenAsync(http, cfg.SpotifyClientId, cfg.SpotifyClientSecret, cfg.SpotifyRefreshToken);
 
+            // ---- Purchased albums (optional) ----
+            var purchasedPlaylistIdRaw = Environment.GetEnvironmentVariable("PURCHASED_PLAYLIST_ID");
+            string? purchasedPlaylistId = null;
+            if (!string.IsNullOrWhiteSpace(purchasedPlaylistIdRaw))
+            {
+                purchasedPlaylistId = NormalizePlaylistId(purchasedPlaylistIdRaw);
+                if (!IsBase62(purchasedPlaylistId))
+                    throw new InvalidOperationException($"PURCHASED_PLAYLIST_ID is not a valid Spotify playlist id: '{purchasedPlaylistIdRaw}'");
+            }
+
+            var purchasedAlbumIds = new HashSet<string>(StringComparer.Ordinal);
+            var purchasedKeys = new HashSet<string>(StringComparer.Ordinal);
+
+            if (!string.IsNullOrWhiteSpace(purchasedPlaylistId))
+            {
+                Console.WriteLine($"→ Loading purchased playlist {purchasedPlaylistId}…");
+                await foreach (var t in SpotifyApi.GetAllPlaylistTracksAsync(http, token, purchasedPlaylistId, info => Console.WriteLine(info)))
+                {
+                    var aid = t.Album?.Id;
+                    if (!string.IsNullOrWhiteSpace(aid))
+                    {
+                        purchasedAlbumIds.Add(aid);
+                        var artist = t.Album?.Artists?.FirstOrDefault()?.Name ?? "";
+                        var album = t.Album?.Name ?? "";
+                        purchasedKeys.Add(MakeAlbumKey(artist, album));
+                    }
+                }
+                Console.WriteLine($"   ✓ Purchased: {purchasedAlbumIds.Count} album ids, {purchasedKeys.Count} keys.");
+            }
+
             // --- exclusion sets: tracks in Filler/Excluded playlists (URIs) + per-album excluded counts ---
             var excludedTrackIds = new HashSet<string>(StringComparer.Ordinal);
             var excludedCountPerAlbumId = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -303,8 +333,11 @@ internal class Program
             }
 
             // --- build the eBay page from the same Top-100 set (safe to skip if creds not set) ---
-            await GenerateEbayPageAsync(http, ranked, cfg.OutputDir);
-
+            await GenerateEbayPageAsync(
+                http,
+                ranked.Where(a => !purchasedAlbumIds.Contains(a.AlbumId) && !purchasedKeys.Contains(MakeAlbumKey(a))),
+                cfg.OutputDir);
+                       
             // --- persist cache for next run ---
             await SaveAlbumCacheAsync(albumCache, cfg.OutputDir);
 
@@ -346,6 +379,38 @@ internal class Program
 
     private static string BuildMainBlurbWithSource() =>
         @"<div class=""blurb"">My favourite albums as determined by my Spotify account (<a href=""https://github.com/mattdurrant/FavouriteAlbums.Worker"">source code</a>).</div>";
+
+    private static string NormalizeAlbumTitle(string album)
+    {
+        if (string.IsNullOrWhiteSpace(album)) return "";
+        int i = album.IndexOf(" (", StringComparison.Ordinal);
+        if (i > 0) album = album[..i];
+        foreach (var sep in new[] { " - ", ": " })
+        {
+            int j = album.IndexOf(sep, StringComparison.Ordinal);
+            if (j > 0) { album = album[..j]; break; }
+        }
+        return album.Trim();
+    }
+
+    private static string Canon(string s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return "";
+        s = s.ToLowerInvariant().Replace("’", "'").Trim();
+        // keep letters/digits/space/' only
+        var sb = new StringBuilder(s.Length);
+        foreach (var ch in s)
+        {
+            if (char.IsLetterOrDigit(ch) || ch == ' ' || ch == '\'') sb.Append(ch);
+        }
+        return sb.ToString();
+    }
+
+    private static string MakeAlbumKey(string artist, string album)
+        => $"{Canon(artist)} | {Canon(NormalizeAlbumTitle(album))}";
+
+    private static string MakeAlbumKey(AlbumAggregate a)
+        => MakeAlbumKey(a.Artists.FirstOrDefault() ?? "", a.AlbumName ?? "");
 
     // ---------- misc helpers ----------
     private static string Env(string name, bool required = true)
