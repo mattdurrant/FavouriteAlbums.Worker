@@ -51,10 +51,10 @@ public static class EbayRenderer
             sb.Append(@"<div><span class=""badge-green"">")
               .Append(r.IsAuction ? "Auction" : "Buy It Now").Append("</span></div>");
 
-            if (r.IsAuction && r.EndUtc is DateTime end)
+            if (r.IsAuction && r.EndUtc is DateTime endUtc)
             {
-                var (when, rel) = FormatUkWhen(end);
-                sb.Append($@"<div class=""meta"">Ends {Html(when)} ({Html(rel)})</div>");
+                var isoUtc = endUtc.ToString("o"); // ISO 8601 for JS Date.parse
+                sb.Append($@"<div class=""meta""><span class=""eta js-eta"" data-end-utc=""{isoUtc}""></span></div>");
             }
 
             sb.Append("</div>"); // ebleft
@@ -70,33 +70,44 @@ public static class EbayRenderer
 
         var updated = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm 'UTC'");
         sb.Append(@"</main><div class=""footer"">Last updated: ").Append(updated).Append("</div>");
+
+        // Live "time left" updater (runs on load + every 30s)
+        sb.Append(@"<script>
+(function(){
+  function fmt(ms){
+    if (ms <= 0) return 'ended';
+    var s = Math.floor(ms/1000);
+    var d = Math.floor(s/86400); s %= 86400;
+    var h = Math.floor(s/3600);  s %= 3600;
+    var m = Math.floor(s/60);
+    if (d > 0) return d + 'd ' + h + 'h ' + m + 'm left';
+    if (h > 0) return h + 'h ' + m + 'm left';
+    return m + 'm left';
+  }
+  function update(){
+    var now = Date.now();
+    document.querySelectorAll('.js-eta').forEach(function(el){
+      var row = el.closest('.ebrow');
+      var endAttr = el.getAttribute('data-end-utc');
+      var end = Date.parse(endAttr);
+      if (isNaN(end)) { el.textContent = ''; return; }
+      var ms = end - now;
+      el.textContent = fmt(ms);
+      if (ms <= 0) row && row.classList.add('ended'); else row && row.classList.remove('ended');
+    });
+  }
+  document.addEventListener('DOMContentLoaded', function(){
+    update();
+    setInterval(update, 30000);
+  });
+  document.addEventListener('visibilitychange', function(){
+    if (!document.hidden) update();
+  });
+})();
+</script>");
+
         sb.Append("</body></html>");
         return sb.ToString();
-    }
-
-    private static (string when, string relative) FormatUkWhen(DateTime endUtc)
-    {
-        // Try both Windows & Linux IDs for UK
-        DateTime local;
-        try
-        {
-            var tz = TimeZoneInfo.FindSystemTimeZoneById("Europe/London");
-            local = TimeZoneInfo.ConvertTimeFromUtc(endUtc, tz);
-        }
-        catch
-        {
-            var tz = TimeZoneInfo.FindSystemTimeZoneById("GMT Standard Time");
-            local = TimeZoneInfo.ConvertTimeFromUtc(endUtc, tz);
-        }
-
-        var when = local.ToString("ddd dd MMM yyyy HH:mm 'UK'");
-        var span = endUtc - DateTime.UtcNow;
-        if (span < TimeSpan.Zero) return (when, "ended");
-        string rel;
-        if (span.TotalHours < 1) rel = $"{(int)span.TotalMinutes}m";
-        else if (span.TotalDays < 1) rel = $"{(int)span.TotalHours}h {(int)(span.Minutes)}m";
-        else rel = $"{(int)span.TotalDays}d {(int)(span.Hours)}h";
-        return (when, $"in {rel}");
     }
 
     private static string Html(string s) => s
