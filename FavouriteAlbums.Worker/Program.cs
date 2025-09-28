@@ -9,7 +9,7 @@ internal class Program
 {
     // ----- Hard-coded boosted weights: index by star value [0..5] -----
     // 5★=1.20, 4★=1.00, 3★=0.60, 2★=0.30, 1★=0.10
-    private static readonly double[] StarWeights = { 0.0, 0.10, 0.30, 0.60, 1.00, 1.20 };
+    private static readonly double[] StarWeights = { 0.0, 0.10, 0.30, 0.7, 1.00, 1.20 };
 
     static async Task<int> Main()
     {
