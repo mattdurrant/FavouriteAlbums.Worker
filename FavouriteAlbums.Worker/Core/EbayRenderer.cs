@@ -34,7 +34,10 @@ public static class EbayRenderer
 </style>
 </head><body class=""albums-page"">");
 
-        sb.Append("<header><h1>").Append(Html(title)).Append("</h1>");
+        sb.Append(@"<header>
+          <div class=""site-nav""><a href=""https://www.mattdurrant.com/"">← Home</a></div>
+          <h1>").Append(Html(title)).Append("</h1>");
+
         if (!string.IsNullOrWhiteSpace(navHtml))
             sb.Append(@"<nav class=""subnav"">").Append(navHtml).Append("</nav>");
         sb.Append("</header><main>");
